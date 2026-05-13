@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-PROJECT_NAME="xboard-xray-docker-sync"
+REPO="xiaofujie369/xboard-xray-docker-sync"
+BRANCH="main"
+RAW_BASE="https://raw.githubusercontent.com/${REPO}/${BRANCH}"
+
 XRAY_DIR="/opt/xray"
 SYNC_DIR="/opt/xray-sync"
 
@@ -42,6 +45,8 @@ systemctl enable docker --now
 if ! docker compose version >/dev/null 2>&1; then
   echo "[3/9] 安装 docker compose plugin..."
   apt install -y docker-compose-plugin || true
+else
+  echo "[3/9] docker compose 已安装"
 fi
 
 echo "[4/9] 创建目录..."
@@ -78,11 +83,11 @@ cat > "$XRAY_DIR/config/config.json" <<'EOC'
 }
 EOC
 
-echo "[7/9] 复制同步脚本..."
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cp "$SCRIPT_DIR/sync/xboard_sync.py" "$SYNC_DIR/xboard_sync.py"
-cp "$SCRIPT_DIR/sync/xboard_report.py" "$SYNC_DIR/xboard_report.py"
-cp "$SCRIPT_DIR/sync/healthcheck.sh" "$SYNC_DIR/healthcheck.sh"
+echo "[7/9] 下载同步脚本..."
+curl -fsSL "${RAW_BASE}/sync/xboard_sync.py" -o "$SYNC_DIR/xboard_sync.py"
+curl -fsSL "${RAW_BASE}/sync/xboard_report.py" -o "$SYNC_DIR/xboard_report.py"
+curl -fsSL "${RAW_BASE}/sync/healthcheck.sh" -o "$SYNC_DIR/healthcheck.sh"
+
 chmod +x "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/healthcheck.sh"
 
 cat > "$SYNC_DIR/.env" <<EOFENV
@@ -99,8 +104,8 @@ EOFENV
 chmod 600 "$SYNC_DIR/.env"
 
 echo "[8/9] 写入 systemd 服务..."
-cp "$SCRIPT_DIR/systemd/xboard-sync.service" /etc/systemd/system/xboard-sync.service
-cp "$SCRIPT_DIR/systemd/xboard-report.service" /etc/systemd/system/xboard-report.service
+curl -fsSL "${RAW_BASE}/systemd/xboard-sync.service" -o /etc/systemd/system/xboard-sync.service
+curl -fsSL "${RAW_BASE}/systemd/xboard-report.service" -o /etc/systemd/system/xboard-report.service
 
 systemctl daemon-reload
 systemctl enable xboard-sync xboard-report

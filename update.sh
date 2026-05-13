@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 set -e
 
+REPO="xiaofujie369/xboard-xray-docker-sync"
+BRANCH="main"
+RAW_BASE="https://raw.githubusercontent.com/${REPO}/${BRANCH}"
+
 SYNC_DIR="/opt/xray-sync"
-XRAY_DIR="/opt/xray"
 
 if [ "$(id -u)" != "0" ]; then
   echo "Please run as root."
   exit 1
 fi
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "[1/5] 停止服务..."
 systemctl stop xboard-sync 2>/dev/null || true
@@ -20,10 +21,11 @@ mkdir -p "$SYNC_DIR/backup"
 cp "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/backup/xboard_sync.py.$(date +%F-%H%M%S)" 2>/dev/null || true
 cp "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/backup/xboard_report.py.$(date +%F-%H%M%S)" 2>/dev/null || true
 
-echo "[3/5] 更新脚本..."
-cp "$SCRIPT_DIR/sync/xboard_sync.py" "$SYNC_DIR/xboard_sync.py"
-cp "$SCRIPT_DIR/sync/xboard_report.py" "$SYNC_DIR/xboard_report.py"
-cp "$SCRIPT_DIR/sync/healthcheck.sh" "$SYNC_DIR/healthcheck.sh"
+echo "[3/5] 下载新脚本..."
+curl -fsSL "${RAW_BASE}/sync/xboard_sync.py" -o "$SYNC_DIR/xboard_sync.py"
+curl -fsSL "${RAW_BASE}/sync/xboard_report.py" -o "$SYNC_DIR/xboard_report.py"
+curl -fsSL "${RAW_BASE}/sync/healthcheck.sh" -o "$SYNC_DIR/healthcheck.sh"
+
 chmod +x "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/healthcheck.sh"
 
 echo "[4/5] 重新同步配置..."
