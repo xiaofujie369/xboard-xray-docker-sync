@@ -1,0 +1,13 @@
+.env
+*.env
+.env.*
+*.log
+logs/
+config.json
+credentials.env
+*.key
+*.pem
+*.crt
+__pycache__/
+*.pyc
+backup/
