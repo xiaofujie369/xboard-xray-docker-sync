@@ -9,7 +9,6 @@ WorkingDirectory=/opt/xray-sync
 ExecStart=/bin/bash -c 'while true; do /usr/bin/python3 /opt/xray-sync/xboard_report.py; sleep 60; done'
 Restart=always
 RestartSec=60
-StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target

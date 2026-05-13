@@ -9,7 +9,6 @@ WorkingDirectory=/opt/xray-sync
 ExecStart=/usr/bin/python3 /opt/xray-sync/xboard_sync.py
 Restart=always
 RestartSec=60
-StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target
