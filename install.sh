@@ -56,7 +56,7 @@ echo "[5/9] 写入 Xray docker-compose.yml..."
 cat > "$XRAY_DIR/docker-compose.yml" <<'EOC'
 services:
   xray:
-    image: ghcr.io/xtls/xray-core:latest
+    image: ghcr.io/xtls/xray-core:26.5.9
     container_name: xray-core
     restart: always
     network_mode: host
