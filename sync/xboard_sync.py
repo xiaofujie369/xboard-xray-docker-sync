@@ -294,6 +294,108 @@ def build_stream_settings(server):
     return stream
 
 
+
+def ensure_list(v):
+    v = parse_json_maybe(v)
+
+    if v is None or v == "":
+        return []
+
+    if isinstance(v, list):
+        return v
+
+    if isinstance(v, dict):
+        return [v]
+
+    return []
+
+
+def extract_custom_outbounds(server):
+    """
+    Read per-node custom outbounds from XBoard.
+    Supported field names:
+    - custom_outbounds
+    - customOutbounds
+    - outbounds
+    """
+    if not isinstance(server, dict):
+        return []
+
+    for key in ["custom_outbounds", "customOutbounds", "outbounds"]:
+        val = server.get(key)
+        items = ensure_list(val)
+        if not items:
+            continue
+
+        valid = []
+        for item in items:
+            if isinstance(item, dict) and item.get("tag") and item.get("protocol"):
+                valid.append(item)
+
+        if valid:
+            return valid
+
+    return []
+
+
+def extract_custom_routes(server, inbound_tag=None):
+    """
+    Read per-node custom routes from XBoard.
+    Supported field names:
+    - custom_routes
+    - customRoutes
+
+    Important:
+    Do not parse server.routes here. XBoard routes may include DNS/domain rules,
+    not pure Xray routing rules.
+    """
+    if not isinstance(server, dict):
+        return []
+
+    routes = []
+
+    for key in ["custom_routes", "customRoutes"]:
+        val = server.get(key)
+        items = ensure_list(val)
+        if not items:
+            continue
+
+        for item in items:
+            if isinstance(item, dict) and item.get("type") == "field" and item.get("outboundTag"):
+                rr = dict(item)
+
+                # Per-node isolation:
+                # If XBoard route does not include inboundTag, automatically bind it to this node inbound.
+                if inbound_tag and "inboundTag" not in rr:
+                    rr["inboundTag"] = [inbound_tag]
+
+                routes.append(rr)
+
+    return routes
+
+
+def dedupe_outbounds(outbounds):
+    seen = set()
+    result = []
+
+    for ob in outbounds:
+        if not isinstance(ob, dict):
+            continue
+
+        tag = ob.get("tag")
+        if not tag:
+            continue
+
+        if tag in seen:
+            continue
+
+        seen.add(tag)
+        result.append(ob)
+
+    return result
+
+
+
 def build_vless_clients(user_resp, flow):
     users = get_users_list(user_resp)
     clients = []
@@ -561,7 +663,49 @@ def build_shadowsocks_inbound(config_resp, user_resp):
     }
 
 
-def build_xray_config(inbounds):
+def build_xray_config(inbounds, custom_outbounds=None, custom_routes=None):
+    custom_outbounds = custom_outbounds or []
+    custom_routes = custom_routes or []
+
+    outbounds = dedupe_outbounds(
+        custom_outbounds + [
+            {
+                "tag": "direct",
+                "protocol": "freedom",
+                "settings": {}
+            },
+            {
+                "tag": "block",
+                "protocol": "blackhole",
+                "settings": {}
+            }
+        ]
+    )
+
+    routing_rules = [
+        {
+            "type": "field",
+            "inboundTag": [
+                "api"
+            ],
+            "outboundTag": "api"
+        },
+        {
+            "type": "field",
+            "ip": [
+                "geoip:private"
+            ],
+            "outboundTag": "block"
+        },
+        {
+            "type": "field",
+            "protocol": [
+                "bittorrent"
+            ],
+            "outboundTag": "block"
+        }
+    ] + custom_routes
+
     return {
         "log": {
             "loglevel": "warning"
@@ -605,46 +749,12 @@ def build_xray_config(inbounds):
                 }
             }
         ] + inbounds,
-        "outbounds": [
-            {
-                "tag": "direct",
-                "protocol": "freedom",
-                "settings": {}
-            },
-            {
-                "tag": "block",
-                "protocol": "blackhole",
-                "settings": {}
-            }
-        ],
+        "outbounds": outbounds,
         "routing": {
             "domainStrategy": "AsIs",
-            "rules": [
-                {
-                    "type": "field",
-                    "inboundTag": [
-                        "api"
-                    ],
-                    "outboundTag": "api"
-                },
-                {
-                    "type": "field",
-                    "ip": [
-                        "geoip:private"
-                    ],
-                    "outboundTag": "block"
-                },
-                {
-                    "type": "field",
-                    "protocol": [
-                        "bittorrent"
-                    ],
-                    "outboundTag": "block"
-                }
-            ]
+            "rules": routing_rules
         }
     }
-
 
 def sha256_text(s):
     return hashlib.sha256(s.encode()).hexdigest()
@@ -658,6 +768,8 @@ def fetch_node(panel, token, node_id, node_type):
 
     config_resp = get_json(config_url)
     user_resp = get_json(user_url)
+
+    server = unwrap_config(config_resp)
 
     if node_type == "vless":
         inbound = build_vless_inbound(config_resp, user_resp)
@@ -673,9 +785,25 @@ def fetch_node(panel, token, node_id, node_type):
             f"官方 xray-core 不支持 AnyTLS/Hysteria2/TUIC，请用 sing-box。"
         )
 
-    print(f"[sync] 已生成节点 {node_id}:{node_type} -> {inbound['tag']}:{inbound['port']}", flush=True)
-    return inbound
+    custom_outbounds = extract_custom_outbounds(server)
+    custom_routes = extract_custom_routes(
+        server,
+        inbound_tag=inbound.get("tag")
+    )
 
+    if custom_outbounds:
+        print(f"[sync] 节点 {node_id}:{node_type} 下发 custom outbounds: {len(custom_outbounds)}", flush=True)
+
+    if custom_routes:
+        print(f"[sync] 节点 {node_id}:{node_type} 下发 custom routes: {len(custom_routes)}", flush=True)
+
+    print(f"[sync] 已生成节点 {node_id}:{node_type} -> {inbound['tag']}:{inbound['port']}", flush=True)
+
+    return {
+        "inbound": inbound,
+        "custom_outbounds": custom_outbounds,
+        "custom_routes": custom_routes
+    }
 
 def sync_once():
     env = load_env()
@@ -688,10 +816,16 @@ def sync_once():
     container = env.get("XRAY_CONTAINER", "xray-core")
 
     inbounds = []
+    custom_outbounds = []
+    custom_routes = []
 
     for node_id, node_type in nodes:
-        inbound = fetch_node(panel, token, node_id, node_type)
+        node_data = fetch_node(panel, token, node_id, node_type)
+        inbound = node_data["inbound"]
+
         inbounds.append(inbound)
+        custom_outbounds.extend(node_data.get("custom_outbounds", []))
+        custom_routes.extend(node_data.get("custom_routes", []))
 
     # 防止端口重复
     seen_ports = {}
@@ -701,7 +835,11 @@ def sync_once():
             raise RuntimeError(f"端口冲突：{seen_ports[p]} 和 {inbound['tag']} 都使用端口 {p}")
         seen_ports[p] = inbound["tag"]
 
-    xray_config = build_xray_config(inbounds)
+    xray_config = build_xray_config(
+        inbounds,
+        custom_outbounds=custom_outbounds,
+        custom_routes=custom_routes
+    )
 
     new_text = json.dumps(xray_config, ensure_ascii=False, indent=2)
     old_text = config_path.read_text(errors="ignore") if config_path.exists() else ""

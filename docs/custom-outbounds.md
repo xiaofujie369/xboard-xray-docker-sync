@@ -1,141 +1,23 @@
-# XBoard Xray Docker Sync
-
-Official xray-core Docker deployment with XBoard panel sync and traffic report.
-
-This project does not use Xboard-Node, V2bX, or XrayR. It uses official xray-core plus lightweight Python sync/report scripts.
-
-## Features
-
-- Official xray-core Docker
-- XBoard node config sync
-- XBoard user sync
-- XBoard traffic report
-- Multi-node support
-- Multi-protocol support
-- systemd auto start
-- Restart on failure after 60 seconds
-- Health check script
-
-## Supported Protocols
-
-Supported by official xray-core:
-
-- VLESS
-- VLESS Reality
-- VMess
-- Trojan
-- Shadowsocks
-- Shadowsocks TCP/UDP
-
-Not supported by official xray-core:
-
-- AnyTLS
-- Hysteria2
-- TUIC
-
-Use sing-box for AnyTLS, Hysteria2, and TUIC.
-
-## Tested
-
-- VLESS Reality
-- Shadowsocks chacha20-ietf-poly1305
-
-## Important Notes
-
-Do not commit real secrets:
-
-- PANEL_TOKEN
-- Reality privateKey
-- Shadowsocks server_key
-- User UUID list
-- /opt/xray-sync/.env
-
-For Shadowsocks 2022:
-
-- 2022-blake3-aes-256-gcm requires valid base64 PSK for server and clients.
-- If your XBoard only returns UUID as user password, use chacha20-ietf-poly1305 or aes-128-gcm instead.
-
-## Quick Install
-
-Replace YOUR_USERNAME with your GitHub username.
-
-bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/xboard-xray-docker-sync/main/install.sh)
-
-## Manual Install
-
-git clone https://github.com/YOUR_USERNAME/xboard-xray-docker-sync.git
-cd xboard-xray-docker-sync
-bash install.sh
-
-## Node List Format
-
-NODES=node_id:protocol,node_id:protocol
-
-Examples:
-
-NODES=3047:vless
-NODES=3047:vless,8881:shadowsocks
-NODES=3047:vless,8881:shadowsocks,8882:trojan,8883:vmess
-
-## Runtime Files
-
-/opt/xray
-/opt/xray/config/config.json
-/opt/xray/docker-compose.yml
-/opt/xray-sync
-/opt/xray-sync/.env
-/opt/xray-sync/xboard_sync.py
-/opt/xray-sync/xboard_report.py
-/opt/xray-sync/healthcheck.sh
-
-## Services
-
-systemctl status xboard-sync --no-pager
-systemctl status xboard-report --no-pager
-
-## Health Check
-
-/opt/xray-sync/healthcheck.sh
-
-## Update
-
-cd xboard-xray-docker-sync
-git pull
-bash update.sh
-
-## Uninstall
-
-bash uninstall.sh
-
-## Firewall
-
-Open all node ports in your server firewall and cloud security group.
-
-Example:
-
-ufw allow 31059/tcp
-ufw allow 45123/tcp
-ufw allow 45123/udp
-
-## License
-
-MIT
-
-## Custom Outbounds and Routes
+# XBoard Per-Node Custom Outbounds and Routes
 
 This project supports XBoard per-node custom outbounds and custom routes.
 
-You can configure different outbound rules for each node in XBoard.
+Custom outbounds are server-side only. They are used by the VPS Xray-core process and should not appear in client subscription links.
+
+## How It Works
 
 Example:
 
-- Node 249 uses VLESS Reality inbound on port 443
-- Node 249 custom outbound uses another upstream VLESS/TLS/Vision node
-- Only traffic from inbound tag `vless-443` will be routed to this outbound
+- Inbound node: vless-443
+- Custom outbound: relay-vless-tls
+- Route: vless-443 -> relay-vless-tls
 
-### Custom Route Example
+The client connects to the current VPS inbound node first. Then Xray routes the traffic to the configured upstream outbound node.
 
-```json
+## Custom Route Example
+
+Use this in XBoard node custom routes:
+
 [
   {
     "type": "field",
@@ -145,6 +27,25 @@ Example:
     "outboundTag": "relay-vless-tls"
   }
 ]
+
+Common generated inbound tags:
+
+- vless-443
+- vless-31059
+- shadowsocks-45123
+- trojan-443
+- vmess-443
+
+If custom routes do not include inboundTag, this script will automatically bind the route to the current node inbound tag.
+
+---
+
+## 1. VLESS + TLS + Vision Outbound
+
+Use this when your upstream outbound node is VLESS + TLS + xtls-rprx-vision.
+
+Custom Outbounds:
+
 [
   {
     "tag": "relay-vless-tls",
@@ -175,6 +76,9 @@ Example:
     }
   }
 ]
+
+Custom Routes:
+
 [
   {
     "type": "field",
@@ -184,6 +88,71 @@ Example:
     "outboundTag": "relay-vless-tls"
   }
 ]
+
+Important:
+
+If the upstream node is VLESS + TLS + Vision, remember to add:
+
+"flow": "xtls-rprx-vision"
+
+---
+
+## 2. VLESS + TLS Outbound
+
+Use this when your upstream outbound node is normal VLESS + TLS without Vision flow.
+
+Custom Outbounds:
+
+[
+  {
+    "tag": "relay-vless-tls",
+    "protocol": "vless",
+    "settings": {
+      "vnext": [
+        {
+          "address": "example.com",
+          "port": 443,
+          "users": [
+            {
+              "id": "YOUR-UPSTREAM-VLESS-UUID",
+              "encryption": "none"
+            }
+          ]
+        }
+      ]
+    },
+    "streamSettings": {
+      "network": "tcp",
+      "security": "tls",
+      "tlsSettings": {
+        "serverName": "example.com",
+        "allowInsecure": false,
+        "fingerprint": "edge"
+      }
+    }
+  }
+]
+
+Custom Routes:
+
+[
+  {
+    "type": "field",
+    "inboundTag": [
+      "vless-443"
+    ],
+    "outboundTag": "relay-vless-tls"
+  }
+]
+
+---
+
+## 3. VLESS + Reality Outbound
+
+Use this when your upstream outbound node is VLESS + Reality.
+
+Custom Outbounds:
+
 [
   {
     "tag": "relay-vless-reality",
@@ -216,6 +185,9 @@ Example:
     }
   }
 ]
+
+Custom Routes:
+
 [
   {
     "type": "field",
@@ -225,6 +197,17 @@ Example:
     "outboundTag": "relay-vless-reality"
   }
 ]
+
+Important:
+
+Use the upstream Reality public key, not the private key.
+
+---
+
+## 4. Trojan + TLS Outbound
+
+Custom Outbounds:
+
 [
   {
     "tag": "relay-trojan-tls",
@@ -249,6 +232,9 @@ Example:
     }
   }
 ]
+
+Custom Routes:
+
 [
   {
     "type": "field",
@@ -258,6 +244,19 @@ Example:
     "outboundTag": "relay-trojan-tls"
   }
 ]
+
+---
+
+## 5. Shadowsocks Outbound
+
+Recommended methods:
+
+- chacha20-ietf-poly1305
+- aes-128-gcm
+- aes-256-gcm
+
+Custom Outbounds:
+
 [
   {
     "tag": "relay-shadowsocks",
@@ -274,6 +273,9 @@ Example:
     }
   }
 ]
+
+Custom Routes:
+
 [
   {
     "type": "field",
@@ -283,6 +285,13 @@ Example:
     "outboundTag": "relay-shadowsocks"
   }
 ]
+
+---
+
+## 6. SOCKS5 Outbound
+
+Custom Outbounds:
+
 [
   {
     "tag": "relay-socks5",
@@ -303,6 +312,9 @@ Example:
     }
   }
 ]
+
+Custom Routes:
+
 [
   {
     "type": "field",
@@ -312,6 +324,30 @@ Example:
     "outboundTag": "relay-socks5"
   }
 ]
+
+Without username and password:
+
+[
+  {
+    "tag": "relay-socks5",
+    "protocol": "socks",
+    "settings": {
+      "servers": [
+        {
+          "address": "example.com",
+          "port": 1080
+        }
+      ]
+    }
+  }
+]
+
+---
+
+## 7. HTTP Proxy Outbound
+
+Custom Outbounds:
+
 [
   {
     "tag": "relay-http",
@@ -332,6 +368,9 @@ Example:
     }
   }
 ]
+
+Custom Routes:
+
 [
   {
     "type": "field",
@@ -341,6 +380,32 @@ Example:
     "outboundTag": "relay-http"
   }
 ]
+
+Without username and password:
+
+[
+  {
+    "tag": "relay-http",
+    "protocol": "http",
+    "settings": {
+      "servers": [
+        {
+          "address": "example.com",
+          "port": 8080
+        }
+      ]
+    }
+  }
+]
+
+---
+
+## 8. Direct Outbound Route
+
+Use this if you want one node to use direct outbound.
+
+Custom Routes:
+
 [
   {
     "type": "field",
@@ -350,6 +415,15 @@ Example:
     "outboundTag": "direct"
   }
 ]
+
+---
+
+## 9. Block Outbound Route
+
+Use this if you want one node to block traffic.
+
+Custom Routes:
+
 [
   {
     "type": "field",
@@ -362,34 +436,11 @@ Example:
 
 ---
 
-## 3. 提交并推送
+## Notes
 
-```bash
-git status
-
-git add sync/xboard_sync.py README.md
-
-git commit -m "Support XBoard per-node custom outbounds and add outbound examples"
-
-git push
-
-## Custom Outbounds
-
-This project supports XBoard per-node custom outbounds and custom routes.
-
-See:
-
-docs/custom-outbounds.md
-
-Supported common custom outbound examples:
-
-- VLESS + TLS + Vision
-- VLESS + TLS
-- VLESS + Reality
-- Trojan + TLS
-- Shadowsocks
-- SOCKS5
-- HTTP Proxy
-- Direct route
-- Block route
-
+- Custom outbounds are server-side only.
+- Client apps only need the inbound node configuration.
+- Do not put upstream UUID/password/private keys into public repositories.
+- If using VLESS + TLS + Vision, add flow: xtls-rprx-vision.
+- If using Reality outbound, use the upstream public key, not private key.
+- Do not parse XBoard normal routes as Xray routing rules. XBoard routes may include DNS/domain policy rules.
