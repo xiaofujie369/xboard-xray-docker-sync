@@ -49,6 +49,12 @@ else
   echo "[3/9] docker compose 已安装"
 fi
 
+echo "[3.5/9] 配置低端口绑定权限..."
+cat > /etc/sysctl.d/99-xray-low-port.conf <<'EOS'
+net.ipv4.ip_unprivileged_port_start=0
+EOS
+sysctl --system >/dev/null || true
+
 echo "[4/9] 创建目录..."
 mkdir -p "$XRAY_DIR/config" "$XRAY_DIR/logs" "$SYNC_DIR"
 
