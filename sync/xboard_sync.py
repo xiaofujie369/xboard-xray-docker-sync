@@ -45,9 +45,16 @@ def get_nodes(env):
             if ":" not in item:
                 raise RuntimeError(f"NODES 格式错误: {item}，正确格式是 节点ID:协议")
             node_id, node_type = item.split(":", 1)
-            nodes.append((node_id.strip(), normalize_node_type(node_type.strip())))
+            node_id = node_id.strip()
+            node_type = normalize_node_type(node_type.strip())
+            if not node_id or not node_type:
+                raise RuntimeError(f"NODES 格式错误: {item}，节点ID和协议不能为空")
+            nodes.append((node_id, node_type))
     else:
         nodes.append((env["NODE_ID"], normalize_node_type(env.get("NODE_TYPE", "vless"))))
+
+    if not nodes:
+        raise RuntimeError("NODES 不能为空，正确格式是 节点ID:协议")
 
     return nodes
 
