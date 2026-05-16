@@ -350,12 +350,10 @@ def build_stream_settings(server):
             dst_key = os.path.join(host_cert_dir, f"{safe_name}.key")
 
             with open(dst_cert, "w") as f:
-                f.write(str(cert_content).strip() + "
-")
+                f.write(str(cert_content).strip() + "\n")
 
             with open(dst_key, "w") as f:
-                f.write(str(key_content).strip() + "
-")
+                f.write(str(key_content).strip() + "\n")
 
             os.chmod(dst_cert, 0o644)
             os.chmod(dst_key, 0o644)
