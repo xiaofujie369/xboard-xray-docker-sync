@@ -25,6 +25,35 @@ def load_env():
     return env
 
 
+def normalize_node_type(t):
+    t = str(t).strip().lower()
+    aliases = {
+        "ss": "shadowsocks",
+        "shadow": "shadowsocks",
+        "shadowsocks2022": "shadowsocks",
+        "v2ray": "vmess",
+    }
+    return aliases.get(t, t)
+
+
+def get_nodes(env):
+    nodes = []
+
+    if env.get("NODES"):
+        for item in env["NODES"].split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if ":" not in item:
+                raise RuntimeError(f"NODES format error: {item}; expected node_id:protocol")
+            node_id, node_type = item.split(":", 1)
+            nodes.append((node_id.strip(), normalize_node_type(node_type.strip())))
+    else:
+        nodes.append((env["NODE_ID"], normalize_node_type(env.get("NODE_TYPE", "vless"))))
+
+    return nodes
+
+
 def run_statsquery():
     cmd = [
         "docker",
@@ -107,16 +136,70 @@ def parse_traffic(stats_json):
     return traffic
 
 
-def post_traffic(traffic):
+def add_traffic(traffic, uid, direction, value):
+    if uid not in traffic:
+        traffic[uid] = [0, 0]
+
+    if direction == "uplink":
+        traffic[uid][0] += value
+    elif direction == "downlink":
+        traffic[uid][1] += value
+
+
+def strip_zero_traffic(traffic):
+    return {
+        uid: arr for uid, arr in traffic.items()
+        if arr[0] > 0 or arr[1] > 0
+    }
+
+
+def parse_traffic_by_node(stats_json):
+    stat_list = stats_json.get("stat") or stats_json.get("stats") or []
+
+    scoped = {}
+    legacy = {}
+
+    for item in stat_list:
+        name = item.get("name", "")
+        value = int(item.get("value", 0) or 0)
+
+        m = re.match(r"^user>>>(.+?)>>>traffic>>>(uplink|downlink)$", name)
+        if not m:
+            continue
+
+        user_key = m.group(1)
+        direction = m.group(2)
+
+        if ":" in user_key:
+            node_id, user_id_raw = user_key.split(":", 1)
+            target = scoped.setdefault(node_id, {})
+        else:
+            user_id_raw = user_key
+            target = legacy
+
+        try:
+            uid = int(user_id_raw)
+        except Exception:
+            continue
+
+        add_traffic(target, uid, direction, value)
+
+    scoped = {
+        node_id: strip_zero_traffic(traffic)
+        for node_id, traffic in scoped.items()
+    }
+    scoped = {node_id: traffic for node_id, traffic in scoped.items() if traffic}
+
+    return scoped, strip_zero_traffic(legacy)
+
+
+def post_traffic(env, node_id, node_type, traffic):
     if not traffic:
         print("[report] 没有新增用户流量，不上报")
         return
 
-    env = load_env()
     panel = env["PANEL_URL"].rstrip("/")
     token = env["PANEL_TOKEN"]
-    node_id = env["NODE_ID"]
-    node_type = env.get("NODE_TYPE", "vless").lower()
 
     url = f"{panel}/api/v1/server/UniProxy/push?node_id={node_id}&node_type={node_type}&token={token}"
 
@@ -134,9 +217,25 @@ def post_traffic(traffic):
 
 
 def main():
+    env = load_env()
+    nodes = get_nodes(env)
     stats = run_statsquery()
-    traffic = parse_traffic(stats)
-    post_traffic(traffic)
+    scoped_traffic, legacy_traffic = parse_traffic_by_node(stats)
+
+    if legacy_traffic:
+        if len(nodes) == 1:
+            node_id = nodes[0][0]
+            traffic = scoped_traffic.setdefault(node_id, {})
+            for uid, values in legacy_traffic.items():
+                if uid not in traffic:
+                    traffic[uid] = [0, 0]
+                traffic[uid][0] += values[0]
+                traffic[uid][1] += values[1]
+        else:
+            print("[report] skipped legacy unscoped traffic because multiple NODES are configured")
+
+    for node_id, node_type in nodes:
+        post_traffic(env, node_id, node_type, scoped_traffic.get(node_id, {}))
 
 
 if __name__ == "__main__":

@@ -57,13 +57,11 @@ For Shadowsocks 2022:
 
 ## Quick Install
 
-Replace YOUR_USERNAME with your GitHub username.
-
-bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/xboard-xray-docker-sync/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/xiaofujie369/xboard-xray-docker-sync/main/install.sh)
 
 ## Manual Install
 
-git clone https://github.com/YOUR_USERNAME/xboard-xray-docker-sync.git
+git clone https://github.com/xiaofujie369/xboard-xray-docker-sync.git
 cd xboard-xray-docker-sync
 bash install.sh
 
