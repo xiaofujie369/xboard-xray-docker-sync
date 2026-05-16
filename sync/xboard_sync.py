@@ -246,7 +246,8 @@ def build_stream_settings(server):
     server_name = pick(ts, "server_name", "serverName", "sni")
     reality_port = pick(ts, "server_port", "serverPort", default="443")
 
-    if tls_mode == 2 or private_key:
+    private_key_is_pem = isinstance(private_key, str) and "BEGIN" in private_key
+    if tls_mode == 2 or (private_key and not private_key_is_pem and tls_mode != 1):
         if not server_name:
             raise RuntimeError("Reality 缺少 tls_settings.server_name")
         if not private_key:
@@ -267,24 +268,127 @@ def build_stream_settings(server):
         }
 
     elif tls_mode == 1:
-        # 注意：TLS 入站必须要有证书文件，否则 Xray 无法启动。
-        # 如果 XBoard 没下发 cert/key，这里只生成空 tlsSettings 可能会失败。
-        # 你的主要节点是 Reality，所以 TLS 证书模式后面可以单独适配。
+        import os
+        import glob
+        import shutil
+
         cert_file = pick(ts, "cert_file", "certFile", "certificateFile")
         key_file = pick(ts, "key_file", "keyFile")
+
+        cert_content = pick(
+            ts,
+            "cert",
+            "crt",
+            "certificate",
+            "certificate_content",
+            "certificateContent",
+            "cert_content",
+            "certContent",
+            "public_key",
+            "publicKey",
+            "public"
+        )
+
+        key_content = pick(
+            ts,
+            "key",
+            "private",
+            "private_key",
+            "privateKey",
+            "private_key_content",
+            "privateKeyContent",
+            "key_content",
+            "keyContent"
+        )
 
         stream["security"] = "tls"
         tls_settings = {
             "serverName": str(server_name or "")
         }
 
+        host_cert_dir = "/opt/xray/config/certs"
+        container_cert_dir = "/etc/xray/certs"
+        os.makedirs(host_cert_dir, exist_ok=True)
+
+        node_id = pick(server, "id", "node_id", "nodeId", "NodeID", "server_id", "serverId")
+        safe_name = str(server_name or f"node-{node_id or 'unknown'}")
+        safe_name = safe_name.replace("*", "wildcard").replace("/", "_").replace(":", "_")
+
+        def install_cert_pair(src_cert, src_key, name):
+            dst_cert = os.path.join(host_cert_dir, f"{name}.crt")
+            dst_key = os.path.join(host_cert_dir, f"{name}.key")
+
+            shutil.copyfile(src_cert, dst_cert)
+            shutil.copyfile(src_key, dst_key)
+
+            os.chmod(dst_cert, 0o644)
+            os.chmod(dst_key, 0o644)
+
+            return {
+                "certificateFile": f"{container_cert_dir}/{name}.crt",
+                "keyFile": f"{container_cert_dir}/{name}.key"
+            }
+
         if cert_file and key_file:
+            cert_file_s = str(cert_file)
+            key_file_s = str(key_file)
+
+            if os.path.exists(cert_file_s) and os.path.exists(key_file_s):
+                tls_settings["certificates"] = [
+                    install_cert_pair(cert_file_s, key_file_s, safe_name)
+                ]
+            else:
+                tls_settings["certificates"] = [
+                    {
+                        "certificateFile": cert_file_s,
+                        "keyFile": key_file_s
+                    }
+                ]
+
+        elif cert_content and key_content and "BEGIN" in str(cert_content) and "BEGIN" in str(key_content):
+            dst_cert = os.path.join(host_cert_dir, f"{safe_name}.crt")
+            dst_key = os.path.join(host_cert_dir, f"{safe_name}.key")
+
+            with open(dst_cert, "w") as f:
+                f.write(str(cert_content).strip() + "
+")
+
+            with open(dst_key, "w") as f:
+                f.write(str(key_content).strip() + "
+")
+
+            os.chmod(dst_cert, 0o644)
+            os.chmod(dst_key, 0o644)
+
             tls_settings["certificates"] = [
                 {
-                    "certificateFile": str(cert_file),
-                    "keyFile": str(key_file)
+                    "certificateFile": f"{container_cert_dir}/{safe_name}.crt",
+                    "keyFile": f"{container_cert_dir}/{safe_name}.key"
                 }
             ]
+
+        else:
+            candidates = []
+
+            if node_id:
+                candidates += glob.glob(f"/etc/xboard-node/instances/*/node-{node_id}/certs/cert.pem")
+
+            candidates += glob.glob("/etc/xboard-node/instances/*/node-*/certs/cert.pem")
+
+            chosen_cert = None
+            chosen_key = None
+
+            for c in candidates:
+                k = os.path.join(os.path.dirname(c), "key.pem")
+                if os.path.exists(c) and os.path.exists(k):
+                    chosen_cert = c
+                    chosen_key = k
+                    break
+
+            if chosen_cert and chosen_key:
+                tls_settings["certificates"] = [
+                    install_cert_pair(chosen_cert, chosen_key, safe_name)
+                ]
 
         stream["tlsSettings"] = tls_settings
 
