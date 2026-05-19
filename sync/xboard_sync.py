@@ -45,9 +45,16 @@ def get_nodes(env):
             if ":" not in item:
                 raise RuntimeError(f"NODES 格式错误: {item}，正确格式是 节点ID:协议")
             node_id, node_type = item.split(":", 1)
-            nodes.append((node_id.strip(), normalize_node_type(node_type.strip())))
+            node_id = node_id.strip()
+            node_type = normalize_node_type(node_type.strip())
+            if not node_id or not node_type:
+                raise RuntimeError(f"NODES 格式错误: {item}，节点ID和协议不能为空")
+            nodes.append((node_id, node_type))
     else:
         nodes.append((env["NODE_ID"], normalize_node_type(env.get("NODE_TYPE", "vless"))))
+
+    if not nodes:
+        raise RuntimeError("NODES 不能为空，正确格式是 节点ID:协议")
 
     return nodes
 
@@ -61,6 +68,13 @@ def normalize_node_type(t):
         "v2ray": "vmess",
     }
     return aliases.get(t, t)
+
+
+def stats_email(user_id, node_id=None):
+    user_id = str(user_id)
+    if node_id not in [None, ""]:
+        return f"{node_id}:{user_id}"
+    return user_id
 
 
 def get_json(url):
@@ -498,7 +512,7 @@ def dedupe_outbounds(outbounds):
 
 
 
-def build_vless_clients(user_resp, flow):
+def build_vless_clients(user_resp, flow, node_id=None):
     users = get_users_list(user_resp)
     clients = []
 
@@ -514,7 +528,7 @@ def build_vless_clients(user_resp, flow):
 
         client = {
             "id": str(uuid),
-            "email": str(user_id)
+            "email": stats_email(user_id, node_id)
         }
 
         if flow:
@@ -528,7 +542,7 @@ def build_vless_clients(user_resp, flow):
     return clients
 
 
-def build_vless_inbound(config_resp, user_resp):
+def build_vless_inbound(config_resp, user_resp, node_id=None):
     server = unwrap_config(config_resp)
     if not isinstance(server, dict):
         raise RuntimeError("config 接口格式不正确，不是 JSON 对象。")
@@ -541,7 +555,7 @@ def build_vless_inbound(config_resp, user_resp):
     listen = get_listen_ip(server)
     flow = pick(server, "flow", default=None)
 
-    clients = build_vless_clients(user_resp, flow)
+    clients = build_vless_clients(user_resp, flow, node_id=node_id)
 
     return {
         "tag": f"vless-{port}",
@@ -564,7 +578,7 @@ def build_vless_inbound(config_resp, user_resp):
     }
 
 
-def build_vmess_clients(user_resp):
+def build_vmess_clients(user_resp, node_id=None):
     users = get_users_list(user_resp)
     clients = []
 
@@ -580,7 +594,7 @@ def build_vmess_clients(user_resp):
 
         clients.append({
             "id": str(uuid),
-            "email": str(user_id),
+            "email": stats_email(user_id, node_id),
             "alterId": 0,
             "security": "auto"
         })
@@ -591,7 +605,7 @@ def build_vmess_clients(user_resp):
     return clients
 
 
-def build_vmess_inbound(config_resp, user_resp):
+def build_vmess_inbound(config_resp, user_resp, node_id=None):
     server = unwrap_config(config_resp)
     if not isinstance(server, dict):
         raise RuntimeError("config 接口格式不正确，不是 JSON 对象。")
@@ -609,7 +623,7 @@ def build_vmess_inbound(config_resp, user_resp):
         "port": port,
         "protocol": "vmess",
         "settings": {
-            "clients": build_vmess_clients(user_resp)
+            "clients": build_vmess_clients(user_resp, node_id=node_id)
         },
         "streamSettings": build_stream_settings(server),
         "sniffing": {
@@ -623,7 +637,7 @@ def build_vmess_inbound(config_resp, user_resp):
     }
 
 
-def build_trojan_clients(user_resp):
+def build_trojan_clients(user_resp, node_id=None):
     users = get_users_list(user_resp)
     clients = []
 
@@ -639,7 +653,7 @@ def build_trojan_clients(user_resp):
 
         clients.append({
             "password": str(password),
-            "email": str(user_id)
+            "email": stats_email(user_id, node_id)
         })
 
     if not clients:
@@ -648,7 +662,7 @@ def build_trojan_clients(user_resp):
     return clients
 
 
-def build_trojan_inbound(config_resp, user_resp):
+def build_trojan_inbound(config_resp, user_resp, node_id=None):
     server = unwrap_config(config_resp)
     if not isinstance(server, dict):
         raise RuntimeError("config 接口格式不正确，不是 JSON 对象。")
@@ -666,7 +680,7 @@ def build_trojan_inbound(config_resp, user_resp):
         "port": port,
         "protocol": "trojan",
         "settings": {
-            "clients": build_trojan_clients(user_resp)
+            "clients": build_trojan_clients(user_resp, node_id=node_id)
         },
         "streamSettings": build_stream_settings(server),
         "sniffing": {
@@ -680,7 +694,7 @@ def build_trojan_inbound(config_resp, user_resp):
     }
 
 
-def build_ss_clients(user_resp, method):
+def build_ss_clients(user_resp, method, node_id=None):
     users = get_users_list(user_resp)
     clients = []
 
@@ -698,7 +712,7 @@ def build_ss_clients(user_resp, method):
             continue
 
         client = {
-            "email": str(user_id),
+            "email": stats_email(user_id, node_id),
             "password": str(password)
         }
 
@@ -713,7 +727,7 @@ def build_ss_clients(user_resp, method):
     return clients
 
 
-def build_shadowsocks_inbound(config_resp, user_resp):
+def build_shadowsocks_inbound(config_resp, user_resp, node_id=None):
     server = unwrap_config(config_resp)
     if not isinstance(server, dict):
         raise RuntimeError("config 接口格式不正确，不是 JSON 对象。")
@@ -734,7 +748,7 @@ def build_shadowsocks_inbound(config_resp, user_resp):
     )
 
     server_key = pick(server, "server_key", "password", "passwd")
-    clients = build_ss_clients(user_resp, method)
+    clients = build_ss_clients(user_resp, method, node_id=node_id)
 
     settings = {
         "method": str(method),
@@ -810,6 +824,8 @@ def build_xray_config(inbounds, custom_outbounds=None, custom_routes=None):
 
     return {
         "log": {
+            "access": "/var/log/xray/access.log",
+            "error": "/var/log/xray/error.log",
             "loglevel": "warning"
         },
         "api": {
@@ -874,13 +890,13 @@ def fetch_node(panel, token, node_id, node_type):
     server = unwrap_config(config_resp)
 
     if node_type == "vless":
-        inbound = build_vless_inbound(config_resp, user_resp)
+        inbound = build_vless_inbound(config_resp, user_resp, node_id=node_id)
     elif node_type == "vmess":
-        inbound = build_vmess_inbound(config_resp, user_resp)
+        inbound = build_vmess_inbound(config_resp, user_resp, node_id=node_id)
     elif node_type == "trojan":
-        inbound = build_trojan_inbound(config_resp, user_resp)
+        inbound = build_trojan_inbound(config_resp, user_resp, node_id=node_id)
     elif node_type == "shadowsocks":
-        inbound = build_shadowsocks_inbound(config_resp, user_resp)
+        inbound = build_shadowsocks_inbound(config_resp, user_resp, node_id=node_id)
     else:
         raise RuntimeError(
             f"暂不支持协议: {node_type}。"
