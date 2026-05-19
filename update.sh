@@ -6,6 +6,7 @@ BRANCH="main"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/${BRANCH}"
 
 SYNC_DIR="/opt/xray-sync"
+XRAY_DIR="/opt/xray"
 
 if [ "$(id -u)" != "0" ]; then
   echo "Please run as root."
@@ -27,6 +28,11 @@ curl -fsSL "${RAW_BASE}/sync/xboard_report.py" -o "$SYNC_DIR/xboard_report.py"
 curl -fsSL "${RAW_BASE}/sync/healthcheck.sh" -o "$SYNC_DIR/healthcheck.sh"
 
 chmod +x "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/healthcheck.sh"
+
+mkdir -p "$XRAY_DIR/logs"
+touch "$XRAY_DIR/logs/access.log" "$XRAY_DIR/logs/error.log"
+chmod 777 "$XRAY_DIR/logs"
+chmod 666 "$XRAY_DIR/logs/access.log" "$XRAY_DIR/logs/error.log"
 
 echo "[4/5] 重新同步配置..."
 cd "$SYNC_DIR"

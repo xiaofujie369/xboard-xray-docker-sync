@@ -878,6 +878,21 @@ def sha256_text(s):
     return hashlib.sha256(s.encode()).hexdigest()
 
 
+def ensure_xray_log_files(log_dir="/opt/xray/logs"):
+    p = Path(log_dir)
+    p.mkdir(parents=True, exist_ok=True)
+
+    access_log = p / "access.log"
+    error_log = p / "error.log"
+
+    access_log.touch(exist_ok=True)
+    error_log.touch(exist_ok=True)
+
+    p.chmod(0o777)
+    access_log.chmod(0o666)
+    error_log.chmod(0o666)
+
+
 def fetch_node(panel, token, node_id, node_type):
     node_type = normalize_node_type(node_type)
 
@@ -932,6 +947,7 @@ def sync_once():
 
     config_path = Path(env.get("XRAY_CONFIG", "/opt/xray/config/config.json"))
     container = env.get("XRAY_CONTAINER", "xray-core")
+    ensure_xray_log_files(env.get("XRAY_LOG_DIR", "/opt/xray/logs"))
 
     inbounds = []
     custom_outbounds = []

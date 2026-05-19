@@ -110,6 +110,18 @@ class SyncConfigTests(unittest.TestCase):
         self.assertTrue(config["policy"]["levels"]["0"]["statsUserUplink"])
         self.assertTrue(config["policy"]["levels"]["0"]["statsUserDownlink"])
 
+    def test_ensure_xray_log_files_creates_writable_logs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            xboard_sync.ensure_xray_log_files(tmp)
+
+            access_log = Path(tmp) / "access.log"
+            error_log = Path(tmp) / "error.log"
+
+            self.assertTrue(access_log.exists())
+            self.assertTrue(error_log.exists())
+            access_log.write_text("ok\n")
+            error_log.write_text("ok\n")
+
 
 class ReportTrafficTests(unittest.TestCase):
     def test_parse_traffic_by_node_aggregates_scoped_and_legacy_stats(self):
