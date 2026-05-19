@@ -1,4 +1,5 @@
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -104,6 +105,8 @@ class SyncConfigTests(unittest.TestCase):
 
         self.assertIn("stats", config)
         self.assertEqual(config["inbounds"][0]["tag"], "api")
+        self.assertEqual(config["log"]["access"], "/var/log/xray/access.log")
+        self.assertEqual(config["log"]["error"], "/var/log/xray/error.log")
         self.assertTrue(config["policy"]["levels"]["0"]["statsUserUplink"])
         self.assertTrue(config["policy"]["levels"]["0"]["statsUserDownlink"])
 
@@ -125,6 +128,43 @@ class ReportTrafficTests(unittest.TestCase):
         self.assertEqual(scoped, {"3047": {1485: [100, 200]}, "8881": {42: [7, 0]}})
         self.assertEqual(legacy, {99: [0, 5]})
 
+    def test_parse_alive_from_access_lines_groups_ips_by_node_and_user(self):
+        lines = [
+            "2026/05/19 10:00:00 1.2.3.4:12345 accepted tcp:example.com:443 email: 3047:1485",
+            "2026/05/19 10:00:01 1.2.3.4:12345 accepted tcp:example.com:443 email: 3047:1485",
+            "2026/05/19 10:00:02 [2001:db8::1]:443 accepted tcp:example.com:443 email: 8881:42",
+            "2026/05/19 10:00:03 5.6.7.8:2222 accepted tcp:example.com:443 [99]",
+        ]
+
+        scoped, legacy = xboard_report.parse_alive_from_access_lines(lines)
+
+        self.assertEqual(scoped, {"3047": {1485: ["1.2.3.4"]}, "8881": {42: ["2001:db8::1"]}})
+        self.assertEqual(legacy, {99: ["5.6.7.8"]})
+
+    def test_read_access_log_since_tracks_offsets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "access.log"
+            state_path = Path(tmp) / "state.json"
+            log_path.write_text(
+                "2026/05/19 10:00:00 1.2.3.4:12345 accepted tcp:x email: 3047:1485\n"
+            )
+
+            env = {"XRAY_ACCESS_LOG": str(log_path), "REPORT_STATE": str(state_path)}
+            scoped, legacy = xboard_report.read_access_log_since(env)
+            self.assertEqual(scoped, {"3047": {1485: ["1.2.3.4"]}})
+            self.assertEqual(legacy, {})
+
+            scoped, legacy = xboard_report.read_access_log_since(env)
+            self.assertEqual(scoped, {})
+            self.assertEqual(legacy, {})
+
+            with log_path.open("a") as f:
+                f.write("2026/05/19 10:00:01 5.6.7.8:2222 accepted tcp:x email: 3047:42\n")
+
+            scoped, legacy = xboard_report.read_access_log_since(env)
+            self.assertEqual(scoped, {"3047": {42: ["5.6.7.8"]}})
+            self.assertEqual(legacy, {})
+
     def test_main_posts_scoped_traffic_to_each_configured_node(self):
         stats = {
             "stat": [
@@ -140,6 +180,8 @@ class ReportTrafficTests(unittest.TestCase):
 
         with mock.patch.object(xboard_report, "load_env", return_value=env), \
              mock.patch.object(xboard_report, "run_statsquery", return_value=stats), \
+             mock.patch.object(xboard_report, "read_access_log_since", return_value=({}, {})), \
+             mock.patch.object(xboard_report, "post_alive"), \
              mock.patch.object(xboard_report, "post_traffic") as post_traffic:
             xboard_report.main()
 
@@ -166,15 +208,47 @@ class ReportTrafficTests(unittest.TestCase):
 
         with mock.patch.object(xboard_report, "load_env", return_value=env), \
              mock.patch.object(xboard_report, "run_statsquery", return_value=stats), \
+             mock.patch.object(xboard_report, "read_access_log_since", return_value=({}, {})), \
+             mock.patch.object(xboard_report, "post_alive"), \
              mock.patch.object(xboard_report, "post_traffic") as post_traffic:
             xboard_report.main()
 
         post_traffic.assert_called_once_with(env, "3047", "vless", {1485: [100, 0]})
 
+    def test_main_posts_alive_users_and_zero_traffic_for_online_count(self):
+        env = {
+            "PANEL_URL": "https://panel.example.com",
+            "PANEL_TOKEN": "token",
+            "NODES": "3047:vless",
+        }
+        alive = {"3047": {1485: ["1.2.3.4"]}}
+
+        with mock.patch.object(xboard_report, "load_env", return_value=env), \
+             mock.patch.object(xboard_report, "run_statsquery", return_value={"stat": []}), \
+             mock.patch.object(xboard_report, "read_access_log_since", return_value=(alive, {})), \
+             mock.patch.object(xboard_report, "post_traffic") as post_traffic, \
+             mock.patch.object(xboard_report, "post_alive") as post_alive:
+            xboard_report.main()
+
+        post_traffic.assert_called_once_with(env, "3047", "vless", {1485: [0, 0]})
+        post_alive.assert_called_once_with(env, "3047", "vless", {1485: ["1.2.3.4"]})
+
     def test_post_traffic_skips_empty_payload(self):
         with mock.patch.object(xboard_report.requests, "post") as post, \
              mock.patch("builtins.print"):
             xboard_report.post_traffic(
+                {"PANEL_URL": "https://panel.example.com", "PANEL_TOKEN": "token"},
+                "3047",
+                "vless",
+                {},
+            )
+
+        post.assert_not_called()
+
+    def test_post_alive_skips_empty_payload(self):
+        with mock.patch.object(xboard_report.requests, "post") as post, \
+             mock.patch("builtins.print"):
+            xboard_report.post_alive(
                 {"PANEL_URL": "https://panel.example.com", "PANEL_TOKEN": "token"},
                 "3047",
                 "vless",

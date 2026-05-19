@@ -80,8 +80,10 @@ NODES=3047:vless,8881:shadowsocks,8882:trojan,8883:vmess
 /opt/xray
 /opt/xray/config/config.json
 /opt/xray/docker-compose.yml
+/opt/xray/logs/access.log
 /opt/xray-sync
 /opt/xray-sync/.env
+/opt/xray-sync/report_state.json
 /opt/xray-sync/xboard_sync.py
 /opt/xray-sync/xboard_report.py
 /opt/xray-sync/healthcheck.sh
@@ -94,6 +96,17 @@ systemctl status xboard-report --no-pager
 ## Health Check
 
 /opt/xray-sync/healthcheck.sh
+
+## Traffic and Online Reporting
+
+xboard-report reads Xray Stats API for per-user traffic and pushes it to XBoard.
+
+It also reads /opt/xray/logs/access.log incrementally to report real user IPs to XBoard alive API.
+
+If online users or traffic are not visible, run:
+
+/opt/xray-sync/healthcheck.sh
+journalctl -u xboard-report -n 100 --no-pager
 
 ## Update
 

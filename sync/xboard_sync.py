@@ -824,6 +824,8 @@ def build_xray_config(inbounds, custom_outbounds=None, custom_routes=None):
 
     return {
         "log": {
+            "access": "/var/log/xray/access.log",
+            "error": "/var/log/xray/error.log",
             "loglevel": "warning"
         },
         "api": {
