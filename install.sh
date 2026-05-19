@@ -57,6 +57,9 @@ sysctl --system >/dev/null || true
 
 echo "[4/9] 创建目录..."
 mkdir -p "$XRAY_DIR/config" "$XRAY_DIR/logs" "$SYNC_DIR"
+touch "$XRAY_DIR/logs/access.log" "$XRAY_DIR/logs/error.log"
+chmod 777 "$XRAY_DIR/logs"
+chmod 666 "$XRAY_DIR/logs/access.log" "$XRAY_DIR/logs/error.log"
 
 echo "[5/9] 写入 Xray docker-compose.yml..."
 cat > "$XRAY_DIR/docker-compose.yml" <<'EOC'

@@ -42,5 +42,7 @@ journalctl -u xboard-report -n 30 --no-pager || true
 
 echo
 echo "===== Xray Access Log ====="
+ls -ld /opt/xray/logs 2>/dev/null || true
 ls -lh /opt/xray/logs/access.log 2>/dev/null || true
+ls -lh /opt/xray/logs/error.log 2>/dev/null || true
 tail -n 10 /opt/xray/logs/access.log 2>/dev/null || true
