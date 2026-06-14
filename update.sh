@@ -30,7 +30,8 @@ curl -fsSL "${RAW_BASE}/sync/healthcheck.sh" -o "$SYNC_DIR/healthcheck.sh"
 curl -fsSL "${RAW_BASE}/sync/manage.sh" -o "$SYNC_DIR/manage.sh"
 
 cp "$SYNC_DIR/manage.sh" /usr/local/bin/xray-sync
-chmod +x "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/healthcheck.sh" "$SYNC_DIR/manage.sh" /usr/local/bin/xray-sync
+cp "$SYNC_DIR/manage.sh" /usr/local/bin/xbr
+chmod +x "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/healthcheck.sh" "$SYNC_DIR/manage.sh" /usr/local/bin/xray-sync /usr/local/bin/xbr
 
 mkdir -p "$XRAY_DIR/logs"
 touch "$XRAY_DIR/logs/access.log" "$XRAY_DIR/logs/error.log"
@@ -47,4 +48,4 @@ systemctl restart xboard-sync
 systemctl restart xboard-report
 
 echo "更新完成。"
-echo "管理菜单: xray-sync"
+echo "管理菜单: xbr"

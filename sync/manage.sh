@@ -14,7 +14,7 @@ CONTAINER="xray-core"
 
 need_root() {
   if [ "$(id -u)" != "0" ]; then
-    echo "请使用 root 运行: sudo xray-sync"
+    echo "请使用 root 运行: sudo xbr"
     exit 1
   fi
 }

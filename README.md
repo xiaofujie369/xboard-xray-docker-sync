@@ -61,7 +61,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/xiaofujie369/xboard-xray-doc
 
 After installation, use the management menu:
 
-xray-sync
+xbr
 
 ## Manual Install
 
@@ -101,7 +101,9 @@ systemctl status xboard-report --no-pager
 
 Run as root:
 
-xray-sync
+xbr
+
+The longer `xray-sync` command is still installed as a compatibility alias.
 
 Menu features:
 

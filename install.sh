@@ -98,7 +98,8 @@ curl -fsSL "${RAW_BASE}/sync/xboard_report.py" -o "$SYNC_DIR/xboard_report.py"
 curl -fsSL "${RAW_BASE}/sync/healthcheck.sh" -o "$SYNC_DIR/healthcheck.sh"
 curl -fsSL "${RAW_BASE}/sync/manage.sh" -o "$SYNC_DIR/manage.sh"
 cp "$SYNC_DIR/manage.sh" /usr/local/bin/xray-sync
-chmod +x "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/healthcheck.sh" "$SYNC_DIR/manage.sh" /usr/local/bin/xray-sync
+cp "$SYNC_DIR/manage.sh" /usr/local/bin/xbr
+chmod +x "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/healthcheck.sh" "$SYNC_DIR/manage.sh" /usr/local/bin/xray-sync /usr/local/bin/xbr
 
 cat > "$SYNC_DIR/.env" <<EOFENV
 PANEL_URL=$PANEL_URL
@@ -143,6 +144,7 @@ echo "  docker ps -a | grep xray"
 echo "  systemctl status xboard-sync --no-pager"
 echo "  systemctl status xboard-report --no-pager"
 echo "  /opt/xray-sync/healthcheck.sh"
+echo "  xbr"
 echo "  xray-sync"
 echo
 echo "请确认云安全组 / 防火墙已放行节点端口。"
