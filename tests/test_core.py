@@ -29,6 +29,14 @@ MHctestkey
 -----END EC PRIVATE KEY-----
 """
 
+TEST_ECH_KEY = """-----BEGIN ECH KEYS-----
+YWJjZGVm
+-----END ECH KEYS-----"""
+
+TEST_ECH_CONFIG = """-----BEGIN ECH CONFIGS-----
+YWJjZGVm
+-----END ECH CONFIGS-----"""
+
 
 class NodeParsingTests(unittest.TestCase):
     def test_sync_parses_multi_node_env_with_aliases(self):
@@ -145,6 +153,134 @@ class SyncConfigTests(unittest.TestCase):
             )
             self.assertEqual((Path(tmp) / "link.shy521.com.crt").read_text(), TEST_CERT)
             self.assertEqual((Path(tmp) / "link.shy521.com.key").read_text(), TEST_KEY)
+
+    def test_tls_advanced_panel_settings_are_mapped_when_present(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(xboard_sync, "HOST_CERT_DIR", tmp), \
+             mock.patch.object(xboard_sync, "CONTAINER_CERT_DIR", "/etc/xray/certs"), \
+             mock.patch("builtins.print"):
+            server = {
+                "id": 371,
+                "protocol": "vless",
+                "server_port": 8443,
+                "network": "tcp",
+                "tls": 1,
+                "utls": {"enabled": True, "fingerprint": "Edge"},
+                "tls_settings": {
+                    "server_name": "link.shy521.com",
+                    "allow_insecure": True,
+                    "alpn": "h2,http/1.1",
+                    "ech": {
+                        "enabled": True,
+                        "key": TEST_ECH_KEY,
+                        "config": TEST_ECH_CONFIG,
+                    },
+                },
+                "cert_config": {
+                    "cert": TEST_CERT,
+                    "key": TEST_KEY,
+                },
+            }
+
+            stream = xboard_sync.build_stream_settings(server)
+            tls = stream["tlsSettings"]
+
+            self.assertEqual(tls["fingerprint"], "edge")
+            self.assertTrue(tls["allowInsecure"])
+            self.assertEqual(tls["alpn"], ["h2", "http/1.1"])
+            self.assertEqual(tls["echServerKeys"], TEST_ECH_KEY)
+            self.assertEqual(tls["echConfigList"], "YWJjZGVm")
+
+    def test_tls_disabled_or_empty_advanced_settings_are_omitted(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(xboard_sync, "HOST_CERT_DIR", tmp), \
+             mock.patch.object(xboard_sync, "CONTAINER_CERT_DIR", "/etc/xray/certs"), \
+             mock.patch("builtins.print"):
+            server = {
+                "id": 371,
+                "protocol": "vless",
+                "server_port": 8443,
+                "network": "tcp",
+                "tls": 1,
+                "utls": {"enabled": False, "fingerprint": "Edge"},
+                "tls_settings": {
+                    "server_name": "link.shy521.com",
+                    "allow_insecure": False,
+                    "ech": {
+                        "enabled": False,
+                        "key": TEST_ECH_KEY,
+                        "config": TEST_ECH_CONFIG,
+                    },
+                },
+                "cert_config": {
+                    "cert": TEST_CERT,
+                    "key": TEST_KEY,
+                },
+            }
+
+            tls = xboard_sync.build_stream_settings(server)["tlsSettings"]
+
+            self.assertNotIn("fingerprint", tls)
+            self.assertNotIn("allowInsecure", tls)
+            self.assertNotIn("echServerKeys", tls)
+            self.assertNotIn("echConfigList", tls)
+
+    def test_vless_flow_and_nested_encryption_are_mapped_when_present(self):
+        config_resp = {
+            "data": {
+                "protocol": "vless",
+                "server_port": 8443,
+                "network": "tcp",
+                "tls": 0,
+                "flow": "xtls-rprx-vision",
+                "encryption": {
+                    "enabled": True,
+                    "decryption": "mlkem768x25519plus.example-private-key",
+                    "encryption": "mlkem768x25519plus.example-public-key",
+                },
+            }
+        }
+        user_resp = {
+            "users": [
+                {
+                    "id": 1485,
+                    "uuid": "00000000-0000-0000-0000-000000000001",
+                }
+            ]
+        }
+
+        inbound = xboard_sync.build_vless_inbound(config_resp, user_resp, node_id="371")
+
+        self.assertEqual(inbound["settings"]["clients"][0]["flow"], "xtls-rprx-vision")
+        self.assertEqual(inbound["settings"]["decryption"], "mlkem768x25519plus.example-private-key")
+
+    def test_vless_empty_flow_and_disabled_encryption_keep_runnable_defaults(self):
+        config_resp = {
+            "data": {
+                "protocol": "vless",
+                "server_port": 8443,
+                "network": "tcp",
+                "tls": 0,
+                "flow": "",
+                "encryption": {
+                    "enabled": False,
+                    "decryption": "should-not-be-used",
+                },
+            }
+        }
+        user_resp = {
+            "users": [
+                {
+                    "id": 1485,
+                    "uuid": "00000000-0000-0000-0000-000000000001",
+                }
+            ]
+        }
+
+        inbound = xboard_sync.build_vless_inbound(config_resp, user_resp, node_id="371")
+
+        self.assertNotIn("flow", inbound["settings"]["clients"][0])
+        self.assertEqual(inbound["settings"]["decryption"], "none")
 
     def test_tls_uses_existing_local_cert_fallback(self):
         with tempfile.TemporaryDirectory() as tmp, \

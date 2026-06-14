@@ -119,6 +119,78 @@ def pick(d, *keys, default=None):
     return default
 
 
+def is_present(v):
+    return v not in [None, "", [], {}]
+
+
+def get_path(d, path, default=None):
+    d = parse_json_maybe(d)
+    if not isinstance(d, dict):
+        return default
+
+    if path in d:
+        return d[path]
+
+    cur = d
+    for part in str(path).split("."):
+        cur = parse_json_maybe(cur)
+        if not isinstance(cur, dict) or part not in cur:
+            return default
+        cur = cur[part]
+
+    return cur
+
+
+def pick_path(d, *paths, default=None):
+    for path in paths:
+        v = get_path(d, path, default=None)
+        if is_present(v):
+            return v
+    return default
+
+
+def as_dict(v):
+    v = parse_json_maybe(v)
+    return v if isinstance(v, dict) else {}
+
+
+def parse_bool(v, default=False):
+    if v is None or v == "":
+        return default
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+
+    s = str(v).strip().lower()
+    if s in ["1", "true", "yes", "y", "on", "enable", "enabled"]:
+        return True
+    if s in ["0", "false", "no", "n", "off", "disable", "disabled"]:
+        return False
+    return default
+
+
+def compact_list(v):
+    v = parse_json_maybe(v)
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if is_present(x)]
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return []
+        if "," in s:
+            return [x.strip() for x in s.split(",") if x.strip()]
+        return [s]
+    if is_present(v):
+        return [str(v)]
+    return []
+
+
+def first_list_value(v):
+    items = compact_list(v)
+    return items[0] if items else None
+
+
 def parse_json_maybe(v):
     if isinstance(v, str):
         s = v.strip()
@@ -168,13 +240,13 @@ def get_network(server):
 
 
 def get_network_settings(server):
-    ns = pick(server, "networkSettings", "network_settings", default={})
+    ns = pick_path(server, "networkSettings", "network_settings", "protocol_settings.network_settings", "protocolSettings.network_settings", default={})
     ns = parse_json_maybe(ns)
     return ns if isinstance(ns, dict) else {}
 
 
 def get_tls_settings(server):
-    ts = pick(server, "tls_settings", "tlsSettings", default={})
+    ts = pick_path(server, "tls_settings", "tlsSettings", "tls", "protocol_settings.tls_settings", "protocolSettings.tls_settings", "protocol_settings.tls", "protocolSettings.tls", default={})
     ts = parse_json_maybe(ts)
     return ts if isinstance(ts, dict) else {}
 
@@ -261,6 +333,29 @@ def normalize_pem_text(value):
     text = text.replace("\\r\\n", "\n").replace("\\n", "\n")
     text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
     return text + "\n"
+
+
+def normalize_multiline_secret(value):
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    return text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def normalize_ech_config_list(value):
+    text = normalize_multiline_secret(value)
+    if not text:
+        return None
+
+    match = re.search(r"-----BEGIN ECH CONFIGS-----\s*(.*?)\s*-----END ECH CONFIGS-----", text, re.S)
+    if match:
+        return re.sub(r"\s+", "", match.group(1))
+
+    return re.sub(r"\s+", "", text) if text.startswith("AF") or "\n" in text else text
 
 
 def is_certificate_pem(text):
@@ -383,6 +478,139 @@ KEY_FILE_KEYS = [
 ]
 
 
+KNOWN_TLS_FINGERPRINTS = {
+    "chrome",
+    "firefox",
+    "safari",
+    "ios",
+    "android",
+    "edge",
+    "360",
+    "qq",
+    "random",
+    "randomized",
+    "unsafe",
+}
+
+
+def normalize_tls_fingerprint(value):
+    if not is_present(value):
+        return None
+
+    fp = str(value).strip()
+    low = fp.lower()
+    if low in KNOWN_TLS_FINGERPRINTS:
+        return low
+    return fp
+
+
+def get_tls_fingerprint(server, tls_settings):
+    utls = pick_path(
+        server,
+        "utls",
+        "uTLS",
+        "tls_utls",
+        "tlsUTLS",
+        "protocol_settings.utls",
+        "protocolSettings.utls",
+        default=None,
+    )
+    if not is_present(utls):
+        utls = pick(tls_settings, "utls", "uTLS", default=None)
+
+    utls = parse_json_maybe(utls)
+    if isinstance(utls, dict):
+        enabled = parse_bool(pick(utls, "enabled", "enable", default=None), default=None)
+        if enabled is False:
+            return None
+
+        fp = pick(utls, "fingerprint", "fp", "client_fingerprint", "clientFingerprint", default=None)
+        if is_present(fp):
+            return normalize_tls_fingerprint(fp)
+
+        if enabled is True:
+            return "chrome"
+
+    elif is_present(utls):
+        return normalize_tls_fingerprint(utls)
+
+    fp = pick_from_configs(
+        [tls_settings, server],
+        ["fingerprint", "fp", "client_fingerprint", "clientFingerprint", "tls_fingerprint", "tlsFingerprint"],
+    )
+    return normalize_tls_fingerprint(fp)
+
+
+def get_ech_settings(tls_settings):
+    ech = pick(tls_settings, "ech", "ech_settings", "echSettings", default=None)
+    ech = parse_json_maybe(ech)
+    if isinstance(ech, dict):
+        enabled = parse_bool(pick(ech, "enabled", "enable", default=None), default=None)
+        if enabled is False:
+            return {}
+        return ech
+    return {}
+
+
+def add_if_present(dst, key, value):
+    if is_present(value):
+        dst[key] = value
+
+
+def add_bool_if_true(dst, key, value):
+    if parse_bool(value, default=False):
+        dst[key] = True
+
+
+def add_common_tls_options(dst, server, tls_settings):
+    fp = get_tls_fingerprint(server, tls_settings)
+    if fp:
+        dst["fingerprint"] = fp
+
+    add_bool_if_true(dst, "allowInsecure", pick(tls_settings, "allow_insecure", "allowInsecure", default=None))
+    add_bool_if_true(dst, "rejectUnknownSni", pick(tls_settings, "reject_unknown_sni", "rejectUnknownSni", default=None))
+    add_bool_if_true(dst, "disableSystemRoot", pick(tls_settings, "disable_system_root", "disableSystemRoot", default=None))
+    add_bool_if_true(
+        dst,
+        "enableSessionResumption",
+        pick(tls_settings, "enable_session_resumption", "enableSessionResumption", default=None),
+    )
+
+    optional_string_fields = {
+        "verifyPeerCertByName": ["verify_peer_cert_by_name", "verifyPeerCertByName"],
+        "minVersion": ["min_version", "minVersion"],
+        "maxVersion": ["max_version", "maxVersion"],
+        "cipherSuites": ["cipher_suites", "cipherSuites"],
+        "pinnedPeerCertSha256": ["pinned_peer_cert_sha256", "pinnedPeerCertSha256"],
+        "masterKeyLog": ["master_key_log", "masterKeyLog"],
+    }
+    for out_key, in_keys in optional_string_fields.items():
+        add_if_present(dst, out_key, pick(tls_settings, *in_keys, default=None))
+
+    alpn = compact_list(pick(tls_settings, "alpn", "ALPN", default=None))
+    if alpn:
+        dst["alpn"] = alpn
+
+    curves = compact_list(pick(tls_settings, "curve_preferences", "curvePreferences", default=None))
+    if curves:
+        dst["curvePreferences"] = curves
+
+    ech = get_ech_settings(tls_settings)
+    ech_key = pick(ech, "key", "server_key", "serverKey", "echServerKeys", default=None)
+    if not is_present(ech_key):
+        ech_key = pick(tls_settings, "ech_server_keys", "echServerKeys", default=None)
+    ech_key = normalize_multiline_secret(ech_key)
+    if ech_key:
+        dst["echServerKeys"] = ech_key
+
+    ech_config = pick(ech, "config", "config_list", "configList", "echConfigList", default=None)
+    if not is_present(ech_config):
+        ech_config = pick(tls_settings, "ech_config_list", "echConfigList", default=None)
+    ech_config = normalize_ech_config_list(ech_config)
+    if ech_config:
+        dst["echConfigList"] = ech_config
+
+
 def resolve_tls_certificate(server, tls_settings, server_name):
     cert_config = pick(server, "cert_config", "certConfig", default={})
     cert_config = parse_json_maybe(cert_config)
@@ -486,7 +714,7 @@ def build_stream_settings(server):
     # -------- transport settings --------
     if network == "ws":
         path = pick(ns, "path", default="/")
-        host = pick(ns, "host", "Host", default=None)
+        host = pick_path(ns, "headers.Host", "header.request.headers.Host", "host", "Host", default=None)
 
         ws_settings = {
             "path": str(path)
@@ -494,7 +722,7 @@ def build_stream_settings(server):
 
         if host:
             ws_settings["headers"] = {
-                "Host": str(host)
+                "Host": str(first_list_value(host) or host)
             }
 
         stream["wsSettings"] = ws_settings
@@ -507,7 +735,7 @@ def build_stream_settings(server):
 
     elif network == "httpupgrade":
         path = pick(ns, "path", default="/")
-        host = pick(ns, "host", "Host", default=None)
+        host = pick_path(ns, "headers.Host", "host", "Host", default=None)
 
         httpupgrade_settings = {
             "path": str(path)
@@ -519,8 +747,39 @@ def build_stream_settings(server):
         stream["httpupgradeSettings"] = httpupgrade_settings
 
     elif network == "tcp":
-        # tcp 默认无需额外 transport 参数
-        pass
+        header = as_dict(pick(ns, "header", default={}))
+        if header and pick(header, "type", default="none") != "none":
+            stream["tcpSettings"] = {"header": header}
+
+    elif network in ["h2", "http"]:
+        stream["network"] = "http"
+        http_settings = {}
+        path = pick(ns, "path", default=None)
+        host = compact_list(pick(ns, "host", "Host", default=None))
+        add_if_present(http_settings, "path", path)
+        if host:
+            http_settings["host"] = host
+        if http_settings:
+            stream["httpSettings"] = http_settings
+
+    elif network == "xhttp":
+        xhttp_settings = {}
+        for key in ["path", "mode", "host"]:
+            add_if_present(xhttp_settings, key, pick(ns, key, default=None))
+        headers = as_dict(pick(ns, "headers", default={}))
+        if headers:
+            xhttp_settings["headers"] = headers
+        extra = pick(ns, "extra", default=None)
+        extra = parse_json_maybe(extra)
+        if is_present(extra):
+            xhttp_settings["extra"] = extra
+        if xhttp_settings:
+            stream["xhttpSettings"] = xhttp_settings
+
+    elif network in ["kcp", "mkcp"]:
+        stream["network"] = "kcp"
+        if ns:
+            stream["kcpSettings"] = ns
 
     else:
         # Xray 可能支持更多 network，但这里不主动生成未知结构
@@ -566,12 +825,28 @@ def build_stream_settings(server):
             "privateKey": str(private_key),
             "shortIds": normalize_short_ids(short_id)
         }
+        for out_key, in_keys in {
+            "minClientVer": ["min_client_ver", "minClientVer"],
+            "maxClientVer": ["max_client_ver", "maxClientVer"],
+            "mldsa65Seed": ["mldsa65_seed", "mldsa65Seed"],
+        }.items():
+            add_if_present(stream["realitySettings"], out_key, pick(ts, *in_keys, default=None))
+
+        max_time_diff = pick(ts, "max_time_diff", "maxTimeDiff", default=None)
+        if is_present(max_time_diff):
+            stream["realitySettings"]["maxTimeDiff"] = int(max_time_diff)
+
+        for key in ["limitFallbackUpload", "limitFallbackDownload"]:
+            value = as_dict(pick(ts, key, key[0].lower() + key[1:], default={}))
+            if value:
+                stream["realitySettings"][key] = value
 
     elif tls_mode == 1:
         stream["security"] = "tls"
         tls_settings = {
             "serverName": str(server_name or "")
         }
+        add_common_tls_options(tls_settings, server, ts)
 
         cert_pair = resolve_tls_certificate(server, ts, server_name)
         if cert_pair:
@@ -687,6 +962,53 @@ def dedupe_outbounds(outbounds):
 
 
 
+def get_vless_flow(server):
+    flow = pick_from_configs([server], ["flow", "flow_control", "flowControl"])
+    if not is_present(flow):
+        return None
+
+    flow = str(flow).strip()
+    if flow.lower() in ["none", "null", "false", "off"]:
+        return None
+    return flow
+
+
+def get_vless_decryption(server):
+    encryption = as_dict(pick_path(
+        server,
+        "encryption",
+        "vless_encryption",
+        "vlessEncryption",
+        "protocol_settings.encryption",
+        "protocolSettings.encryption",
+        default={},
+    ))
+    enabled = parse_bool(pick(encryption, "enabled", "enable", default=None), default=None)
+
+    if enabled is False:
+        return "none"
+
+    decryption = pick_path(
+        server,
+        "decryption",
+        "vless_decryption",
+        "vlessDecryption",
+        "protocol_settings.decryption",
+        "protocolSettings.decryption",
+        default=None,
+    )
+    if not is_present(decryption):
+        decryption = pick(
+            encryption,
+            "decryption",
+            "server_decryption",
+            "serverDecryption",
+            default=None,
+        )
+
+    return str(decryption).strip() if is_present(decryption) else "none"
+
+
 def build_vless_clients(user_resp, flow, node_id=None):
     users = get_users_list(user_resp)
     clients = []
@@ -728,7 +1050,7 @@ def build_vless_inbound(config_resp, user_resp, node_id=None):
 
     port = get_server_port(server, 443)
     listen = get_listen_ip(server)
-    flow = pick(server, "flow", default=None)
+    flow = get_vless_flow(server)
 
     clients = build_vless_clients(user_resp, flow, node_id=node_id)
 
@@ -739,7 +1061,7 @@ def build_vless_inbound(config_resp, user_resp, node_id=None):
         "protocol": "vless",
         "settings": {
             "clients": clients,
-            "decryption": str(pick(server, "decryption", default="none") or "none")
+            "decryption": get_vless_decryption(server)
         },
         "streamSettings": build_stream_settings(server),
         "sniffing": {

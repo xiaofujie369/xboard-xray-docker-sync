@@ -187,8 +187,12 @@ show_node_config() {
     listen,
     port,
     protocol,
+    decryption: .settings.decryption,
+    flow: (.settings.clients[0].flow // null),
     security: .streamSettings.security,
     serverName: .streamSettings.tlsSettings.serverName,
+    fingerprint: .streamSettings.tlsSettings.fingerprint,
+    ech: (.streamSettings.tlsSettings.echServerKeys != null),
     certificates: .streamSettings.tlsSettings.certificates,
     clients: (.settings.clients | length)
   }' "$XRAY_CONFIG"
@@ -241,6 +245,8 @@ check_tls_cert() {
     tag,
     port,
     serverName: .streamSettings.tlsSettings.serverName,
+    fingerprint: .streamSettings.tlsSettings.fingerprint,
+    ech: (.streamSettings.tlsSettings.echServerKeys != null),
     certificates: .streamSettings.tlsSettings.certificates
   }' "$XRAY_CONFIG"
 
