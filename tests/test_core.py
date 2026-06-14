@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -264,6 +265,88 @@ class SyncConfigTests(unittest.TestCase):
         self.assertEqual(config["log"]["error"], "/var/log/xray/error.log")
         self.assertTrue(config["policy"]["levels"]["0"]["statsUserUplink"])
         self.assertTrue(config["policy"]["levels"]["0"]["statsUserDownlink"])
+
+    def test_xray_config_validation_rejects_duplicate_ports(self):
+        config = {
+            "inbounds": [
+                {"tag": "vless-8443", "port": 8443},
+                {"tag": "trojan-8443", "port": 8443},
+            ],
+            "outbounds": [],
+        }
+
+        with self.assertRaises(RuntimeError):
+            xboard_sync.validate_xray_config(config)
+
+    def test_redact_secrets_masks_panel_token(self):
+        text = "https://panel.example.com/api?node_id=371&token=secret-token-value&node_type=vless"
+
+        redacted = xboard_sync.redact_secrets(text)
+
+        self.assertNotIn("secret-token-value", redacted)
+        self.assertIn("token=***", redacted)
+
+    def test_config_backup_prunes_and_restore_works(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            backups = []
+
+            for i in range(3):
+                config_path.write_text(f'{{"version": {i}}}')
+                backups.append(xboard_sync.backup_config(config_path, keep=2))
+
+            remaining = sorted((Path(tmp) / "backups").glob("config.json.*"))
+            self.assertEqual(len(remaining), 2)
+            self.assertFalse(backups[0].exists())
+
+            config_path.write_text('{"version": "new"}')
+            self.assertTrue(xboard_sync.restore_config(backups[-1], config_path))
+            self.assertEqual(config_path.read_text(), '{"version": 2}')
+
+    def test_sync_once_restores_previous_config_when_restart_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            log_dir = Path(tmp) / "logs"
+            old_config = {
+                "inbounds": [],
+                "outbounds": [{"tag": "direct", "protocol": "freedom", "settings": {}}],
+            }
+            config_path.write_text(json.dumps(old_config, ensure_ascii=False, indent=2))
+            env = {
+                "PANEL_URL": "https://panel.example.com",
+                "PANEL_TOKEN": "token",
+                "NODES": "371:vless",
+                "XRAY_CONFIG": str(config_path),
+                "XRAY_LOG_DIR": str(log_dir),
+                "XRAY_CONTAINER": "xray-core",
+            }
+            node_data = {
+                "inbound": {
+                    "tag": "vless-8443",
+                    "listen": "0.0.0.0",
+                    "port": 8443,
+                    "protocol": "vless",
+                    "settings": {
+                        "clients": [],
+                        "decryption": "none",
+                    },
+                    "streamSettings": {
+                        "network": "tcp",
+                        "security": "none",
+                    },
+                },
+                "custom_outbounds": [],
+                "custom_routes": [],
+            }
+
+            with mock.patch.object(xboard_sync, "load_env", return_value=env), \
+                 mock.patch.object(xboard_sync, "fetch_node", return_value=node_data), \
+                 mock.patch.object(xboard_sync, "restart_xray", side_effect=RuntimeError("boom")), \
+                 mock.patch("builtins.print"):
+                with self.assertRaises(RuntimeError):
+                    xboard_sync.sync_once()
+
+            self.assertEqual(config_path.read_text(), json.dumps(old_config, ensure_ascii=False, indent=2))
 
     def test_ensure_xray_log_files_creates_writable_logs(self):
         with tempfile.TemporaryDirectory() as tmp:

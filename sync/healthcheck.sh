@@ -5,7 +5,12 @@ docker ps -a | grep xray-core || true
 
 echo
 echo "===== Ports ====="
-ss -lntup | grep -E '10085|31059|45123|xray' || true
+PORT_PATTERN="$(jq -r '.inbounds[]?.port? // empty' /opt/xray/config/config.json 2>/dev/null | paste -sd'|' -)"
+if [ -n "$PORT_PATTERN" ]; then
+  ss -lntup | grep -E "(${PORT_PATTERN})|xray" || true
+else
+  ss -lntup | grep xray || true
+fi
 
 echo
 echo "===== Xray Config Inbounds ====="

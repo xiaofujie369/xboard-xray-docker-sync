@@ -59,6 +59,10 @@ For Shadowsocks 2022:
 
 bash <(curl -fsSL https://raw.githubusercontent.com/xiaofujie369/xboard-xray-docker-sync/main/install.sh)
 
+After installation, use the management menu:
+
+xray-sync
+
 ## Manual Install
 
 git clone https://github.com/xiaofujie369/xboard-xray-docker-sync.git
@@ -92,6 +96,25 @@ NODES=3047:vless,8881:shadowsocks,8882:trojan,8883:vmess
 
 systemctl status xboard-sync --no-pager
 systemctl status xboard-report --no-pager
+
+## Management Menu
+
+Run as root:
+
+xray-sync
+
+Menu features:
+
+- Edit panel config
+- Install, update, uninstall
+- Start, stop, restart services
+- View status and logs
+- Sync panel config now
+- Inspect generated node config
+- Check Xray config JSON and port conflicts
+- Check TLS certificate files and openssl output
+- Open generated node ports in ufw
+- Backup and restore config.json
 
 ## Health Check
 
@@ -403,4 +426,3 @@ Supported common custom outbound examples:
 - HTTP Proxy
 - Direct route
 - Block route
-

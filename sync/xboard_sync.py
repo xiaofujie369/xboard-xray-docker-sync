@@ -6,6 +6,7 @@ import hashlib
 import glob
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -82,17 +83,31 @@ def stats_email(user_id, node_id=None):
     return user_id
 
 
+def redact_secrets(text):
+    return re.sub(r"([?&]token=)[^&\s]+", r"\1***", str(text))
+
+
 def get_json(url):
-    r = requests.get(url, timeout=25)
-    try:
-        data = r.json()
-    except Exception:
-        raise RuntimeError(f"接口返回不是 JSON: HTTP {r.status_code}, {r.text[:500]}")
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            r = requests.get(url, timeout=25)
+            try:
+                data = r.json()
+            except Exception:
+                raise RuntimeError(f"接口返回不是 JSON: HTTP {r.status_code}, {r.text[:500]}")
 
-    if r.status_code >= 400:
-        raise RuntimeError(f"HTTP {r.status_code}: {json.dumps(data, ensure_ascii=False)[:800]}")
+            if r.status_code >= 400:
+                raise RuntimeError(f"HTTP {r.status_code}: {json.dumps(data, ensure_ascii=False)[:800]}")
 
-    return data
+            return data
+        except Exception as e:
+            last_error = redact_secrets(e)
+            if attempt < 3:
+                print(f"[sync] API 请求失败，准备重试 {attempt}/3: {redact_secrets(e)}", flush=True)
+                time.sleep(2)
+
+    raise RuntimeError(f"API 请求失败: {last_error}")
 
 
 def pick(d, *keys, default=None):
@@ -1053,6 +1068,74 @@ def ensure_xray_log_files(log_dir="/opt/xray/logs"):
     error_log.chmod(0o666)
 
 
+def validate_xray_config(config):
+    if not isinstance(config, dict):
+        raise RuntimeError("生成的 Xray 配置不是 JSON 对象")
+    if not isinstance(config.get("inbounds"), list):
+        raise RuntimeError("生成的 Xray 配置缺少 inbounds 数组")
+    if not isinstance(config.get("outbounds"), list):
+        raise RuntimeError("生成的 Xray 配置缺少 outbounds 数组")
+
+    seen_ports = {}
+    for inbound in config["inbounds"]:
+        if not isinstance(inbound, dict):
+            raise RuntimeError("生成的 Xray inbound 不是 JSON 对象")
+        port = inbound.get("port")
+        tag = inbound.get("tag", "unknown")
+        if port is None:
+            continue
+        if port in seen_ports:
+            raise RuntimeError(f"生成的 Xray 配置端口冲突: {seen_ports[port]} 和 {tag} 都使用 {port}")
+        seen_ports[port] = tag
+
+
+def backup_config(config_path, keep=3):
+    config_path = Path(config_path)
+    if not config_path.exists():
+        return None
+
+    backup_dir = config_path.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup = backup_dir / f"{config_path.name}.{time.strftime('%Y%m%d-%H%M%S')}.{time.time_ns()}"
+    shutil.copy2(config_path, backup)
+
+    backups = sorted(
+        backup_dir.glob(f"{config_path.name}.*"),
+        key=lambda p: p.name,
+        reverse=True
+    )
+    for old in backups[int(keep):]:
+        old.unlink(missing_ok=True)
+
+    return backup
+
+
+def restore_config(backup_path, config_path):
+    if not backup_path:
+        return False
+    backup_path = Path(backup_path)
+    if not backup_path.exists():
+        return False
+    shutil.copy2(backup_path, config_path)
+    return True
+
+
+def write_config_atomically(config_path, text):
+    config_path = Path(config_path)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    parsed = json.loads(text)
+    validate_xray_config(parsed)
+
+    tmp = config_path.with_name(f".{config_path.name}.tmp")
+    tmp.write_text(text)
+    json.loads(tmp.read_text())
+    tmp.replace(config_path)
+
+
+def restart_xray(container):
+    subprocess.run(["docker", "restart", container], check=True)
+
+
 def fetch_node(panel, token, node_id, node_type):
     node_type = normalize_node_type(node_type)
 
@@ -1107,6 +1190,7 @@ def sync_once():
 
     config_path = Path(env.get("XRAY_CONFIG", "/opt/xray/config/config.json"))
     container = env.get("XRAY_CONTAINER", "xray-core")
+    backup_keep = int(env.get("XRAY_CONFIG_BACKUPS", "3"))
     ensure_xray_log_files(env.get("XRAY_LOG_DIR", "/opt/xray/logs"))
 
     inbounds = []
@@ -1139,12 +1223,21 @@ def sync_once():
     old_text = config_path.read_text(errors="ignore") if config_path.exists() else ""
 
     if sha256_text(new_text) != sha256_text(old_text):
-        tmp = config_path.with_suffix(".json.tmp")
-        tmp.write_text(new_text)
-        tmp.replace(config_path)
+        validate_xray_config(xray_config)
+        backup = backup_config(config_path, keep=backup_keep)
+        write_config_atomically(config_path, new_text)
 
         print("[sync] 配置有变化，已写入 /opt/xray/config/config.json，正在重启 xray-core", flush=True)
-        subprocess.run(["docker", "restart", container], check=True)
+        try:
+            restart_xray(container)
+        except Exception:
+            if restore_config(backup, config_path):
+                print("[sync] ERROR: xray-core 重启失败，已恢复上一份配置", file=sys.stderr, flush=True)
+                try:
+                    restart_xray(container)
+                except Exception as rollback_error:
+                    print(f"[sync] ERROR: 旧配置恢复后重启仍失败: {rollback_error}", file=sys.stderr, flush=True)
+            raise
     else:
         print("[sync] 配置无变化，不重启", flush=True)
 

@@ -16,6 +16,7 @@ systemctl disable xboard-report 2>/dev/null || true
 
 rm -f /etc/systemd/system/xboard-sync.service
 rm -f /etc/systemd/system/xboard-report.service
+rm -f /usr/local/bin/xray-sync
 systemctl daemon-reload
 
 docker rm -f xray-core 2>/dev/null || true

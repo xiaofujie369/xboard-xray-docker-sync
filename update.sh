@@ -21,13 +21,16 @@ echo "[2/5] 备份旧脚本..."
 mkdir -p "$SYNC_DIR/backup"
 cp "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/backup/xboard_sync.py.$(date +%F-%H%M%S)" 2>/dev/null || true
 cp "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/backup/xboard_report.py.$(date +%F-%H%M%S)" 2>/dev/null || true
+cp "$SYNC_DIR/manage.sh" "$SYNC_DIR/backup/manage.sh.$(date +%F-%H%M%S)" 2>/dev/null || true
 
 echo "[3/5] 下载新脚本..."
 curl -fsSL "${RAW_BASE}/sync/xboard_sync.py" -o "$SYNC_DIR/xboard_sync.py"
 curl -fsSL "${RAW_BASE}/sync/xboard_report.py" -o "$SYNC_DIR/xboard_report.py"
 curl -fsSL "${RAW_BASE}/sync/healthcheck.sh" -o "$SYNC_DIR/healthcheck.sh"
+curl -fsSL "${RAW_BASE}/sync/manage.sh" -o "$SYNC_DIR/manage.sh"
 
-chmod +x "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/healthcheck.sh"
+cp "$SYNC_DIR/manage.sh" /usr/local/bin/xray-sync
+chmod +x "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/healthcheck.sh" "$SYNC_DIR/manage.sh" /usr/local/bin/xray-sync
 
 mkdir -p "$XRAY_DIR/logs"
 touch "$XRAY_DIR/logs/access.log" "$XRAY_DIR/logs/error.log"
@@ -44,3 +47,4 @@ systemctl restart xboard-sync
 systemctl restart xboard-report
 
 echo "更新完成。"
+echo "管理菜单: xray-sync"

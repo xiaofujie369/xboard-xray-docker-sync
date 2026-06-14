@@ -29,4 +29,4 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Validate shell syntax
-        run: bash -n install.sh update.sh uninstall.sh sync/healthcheck.sh
+        run: bash -n install.sh update.sh uninstall.sh sync/healthcheck.sh sync/manage.sh

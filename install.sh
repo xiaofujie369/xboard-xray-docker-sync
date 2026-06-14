@@ -31,7 +31,7 @@ fi
 echo
 echo "[1/9] 安装依赖..."
 apt update
-apt install -y ca-certificates curl gnupg lsb-release python3 python3-requests jq ufw git
+apt install -y ca-certificates curl gnupg lsb-release python3 python3-requests jq ufw git openssl iproute2
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "[2/9] 安装 Docker..."
@@ -96,7 +96,9 @@ echo "[7/9] 下载同步脚本..."
 curl -fsSL "${RAW_BASE}/sync/xboard_sync.py" -o "$SYNC_DIR/xboard_sync.py"
 curl -fsSL "${RAW_BASE}/sync/xboard_report.py" -o "$SYNC_DIR/xboard_report.py"
 curl -fsSL "${RAW_BASE}/sync/healthcheck.sh" -o "$SYNC_DIR/healthcheck.sh"
-chmod +x "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/healthcheck.sh"
+curl -fsSL "${RAW_BASE}/sync/manage.sh" -o "$SYNC_DIR/manage.sh"
+cp "$SYNC_DIR/manage.sh" /usr/local/bin/xray-sync
+chmod +x "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/healthcheck.sh" "$SYNC_DIR/manage.sh" /usr/local/bin/xray-sync
 
 cat > "$SYNC_DIR/.env" <<EOFENV
 PANEL_URL=$PANEL_URL
@@ -104,6 +106,8 @@ PANEL_TOKEN=$PANEL_TOKEN
 
 XRAY_CONFIG=/opt/xray/config/config.json
 XRAY_CONTAINER=xray-core
+XRAY_LOG_DIR=/opt/xray/logs
+XRAY_CONFIG_BACKUPS=3
 
 SYNC_INTERVAL=60
 NODES=$NODES
@@ -139,5 +143,6 @@ echo "  docker ps -a | grep xray"
 echo "  systemctl status xboard-sync --no-pager"
 echo "  systemctl status xboard-report --no-pager"
 echo "  /opt/xray-sync/healthcheck.sh"
+echo "  xray-sync"
 echo
 echo "请确认云安全组 / 防火墙已放行节点端口。"
