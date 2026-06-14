@@ -450,6 +450,34 @@ class SyncConfigTests(unittest.TestCase):
         self.assertEqual(routes, [])
         self.assertEqual(dns, [])
 
+    def test_panel_route_groups_ignore_comment_lines(self):
+        server = {
+            "routes": [
+                {
+                    "match": [
+                        "# ===== 电商 / 特定地区限制 =====",
+                        "// comment.example",
+                        "; another comment",
+                        ".blocked.example",
+                    ],
+                    "action": "block",
+                }
+            ]
+        }
+
+        routes, dns = xboard_sync.extract_panel_routes(server, inbound_tag="vless-8443")
+
+        self.assertEqual(dns, [])
+        self.assertEqual(routes[0]["domain"], ["domain:blocked.example"])
+        self.assertNotIn("ip", routes[0])
+
+    def test_ip_matcher_requires_real_ip_or_cidr(self):
+        self.assertTrue(xboard_sync.is_ip_matcher("192.168.1.1"))
+        self.assertTrue(xboard_sync.is_ip_matcher("10.0.0.0/8"))
+        self.assertTrue(xboard_sync.is_ip_matcher("2001:db8::/32"))
+        self.assertFalse(xboard_sync.is_ip_matcher("# ===== 电商 / 特定地区限制 ====="))
+        self.assertFalse(xboard_sync.is_ip_matcher("example.com/path"))
+
     def test_panel_default_dns_requires_explicit_opt_in(self):
         route = {"match": ["*"], "action": "dns", "action_value": "9.9.9.9"}
 

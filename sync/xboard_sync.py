@@ -2,6 +2,7 @@
 import sys
 import json
 import copy
+import ipaddress
 import time
 import hashlib
 import glob
@@ -1004,18 +1005,30 @@ def rewrite_route_for_node(route, inbound_tag=None, outbound_tag_map=None):
 
 
 def is_ip_matcher(item):
+    item = str(item).strip()
     if item.startswith("geoip:"):
         return True
-    if "/" in item:
+
+    try:
+        ipaddress.ip_network(item, strict=False)
         return True
-    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", item):
-        return True
-    return False
+    except Exception:
+        return False
 
 
 def is_wildcard_matcher(item):
     item = str(item).strip().lower()
     return item in ["*", "*.*", "0.0.0.0/0", "::/0"]
+
+
+def is_route_comment(item):
+    item = str(item).strip()
+    return (
+        not item
+        or item.startswith("#")
+        or item.startswith("//")
+        or item.startswith(";")
+    )
 
 
 def normalize_domain_matcher(item):
@@ -1045,6 +1058,9 @@ def split_route_match(match_items):
     wildcard = False
 
     for item in ensure_str_list(match_items):
+        if is_route_comment(item):
+            continue
+
         if is_wildcard_matcher(item):
             wildcard = True
             continue
