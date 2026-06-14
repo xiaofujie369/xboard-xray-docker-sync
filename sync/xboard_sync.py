@@ -1751,7 +1751,7 @@ def write_config_atomically(config_path, text):
 def run_xray_config_test(container, config_path, text, container_config_dir="/etc/xray"):
     config_path = Path(config_path)
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = config_path.with_name(f".{config_path.name}.test")
+    tmp = config_path.with_name(f".{config_path.stem}.test{config_path.suffix or '.json'}")
     tmp.write_text(text)
 
     container_tmp = f"{container_config_dir.rstrip('/')}/{tmp.name}"

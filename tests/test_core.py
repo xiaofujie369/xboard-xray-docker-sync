@@ -704,6 +704,29 @@ class SyncConfigTests(unittest.TestCase):
             write_config.assert_not_called()
             restart.assert_not_called()
 
+    def test_xray_pretest_temp_file_keeps_json_extension(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_text = json.dumps({"inbounds": [], "outbounds": []})
+
+            def fake_run(cmd, **kwargs):
+                self.assertIn("/etc/xray/.config.test.json", cmd)
+                result = mock.Mock()
+                result.returncode = 0
+                result.stdout = ""
+                result.stderr = ""
+                return result
+
+            with mock.patch.object(xboard_sync.subprocess, "run", side_effect=fake_run):
+                xboard_sync.run_xray_config_test(
+                    "xray-core",
+                    config_path,
+                    config_text,
+                    container_config_dir="/etc/xray",
+                )
+
+            self.assertFalse((Path(tmp) / ".config.test.json").exists())
+
     def test_ensure_xray_log_files_creates_writable_logs(self):
         with tempfile.TemporaryDirectory() as tmp:
             xboard_sync.ensure_xray_log_files(tmp)

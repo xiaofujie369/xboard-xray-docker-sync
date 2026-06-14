@@ -13,17 +13,27 @@ if [ "$(id -u)" != "0" ]; then
   exit 1
 fi
 
-echo "[1/5] 停止服务..."
+UPDATE_DONE=0
+restore_services_on_exit() {
+  if [ "$UPDATE_DONE" != "1" ]; then
+    echo "[WARN] 更新中断，尝试恢复 xboard 服务..."
+    systemctl start xboard-sync 2>/dev/null || true
+    systemctl start xboard-report 2>/dev/null || true
+  fi
+}
+trap restore_services_on_exit EXIT
+
+echo "[1/6] 停止服务..."
 systemctl stop xboard-sync 2>/dev/null || true
 systemctl stop xboard-report 2>/dev/null || true
 
-echo "[2/5] 备份旧脚本..."
+echo "[2/6] 备份旧脚本..."
 mkdir -p "$SYNC_DIR/backup"
 cp "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/backup/xboard_sync.py.$(date +%F-%H%M%S)" 2>/dev/null || true
 cp "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/backup/xboard_report.py.$(date +%F-%H%M%S)" 2>/dev/null || true
 cp "$SYNC_DIR/manage.sh" "$SYNC_DIR/backup/manage.sh.$(date +%F-%H%M%S)" 2>/dev/null || true
 
-echo "[3/5] 下载新脚本..."
+echo "[3/6] 下载新脚本..."
 curl -fsSL "${RAW_BASE}/sync/xboard_sync.py" -o "$SYNC_DIR/xboard_sync.py"
 curl -fsSL "${RAW_BASE}/sync/xboard_report.py" -o "$SYNC_DIR/xboard_report.py"
 curl -fsSL "${RAW_BASE}/sync/healthcheck.sh" -o "$SYNC_DIR/healthcheck.sh"
@@ -51,6 +61,9 @@ python3 "$SYNC_DIR/xboard_sync.py" once
 echo "[6/6] 重启服务..."
 systemctl restart xboard-sync
 systemctl restart xboard-report
+
+UPDATE_DONE=1
+trap - EXIT
 
 echo "更新完成。"
 echo "管理菜单: xbr"
