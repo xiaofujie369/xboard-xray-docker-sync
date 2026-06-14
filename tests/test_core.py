@@ -402,6 +402,53 @@ class SyncConfigTests(unittest.TestCase):
         self.assertTrue(config["policy"]["levels"]["0"]["statsUserUplink"])
         self.assertTrue(config["policy"]["levels"]["0"]["statsUserDownlink"])
 
+    def test_panel_route_groups_compile_to_routing_and_dns(self):
+        server = {
+            "routes": [
+                {
+                    "remarks": "禁止访问",
+                    "match": [".coinclaim.site", "geoip:private"],
+                    "action": "block",
+                },
+                {
+                    "remarks": "国内域名优化",
+                    "match": ["geosite:cn", ".baidu.com"],
+                    "action": "dns",
+                    "action_value": "DNS: 223.5.5.5,119.29.29.29",
+                },
+                {
+                    "remarks": "默认DNS兜底解析",
+                    "match": ["*"],
+                    "action": "dns",
+                    "action_value": "1.1.1.1,8.8.8.8",
+                },
+            ]
+        }
+
+        routes, dns = xboard_sync.extract_panel_routes(server, inbound_tag="vless-8443")
+
+        self.assertEqual(routes[0]["domain"], ["domain:coinclaim.site"])
+        self.assertEqual(routes[0]["outboundTag"], "block")
+        self.assertEqual(routes[0]["inboundTag"], ["vless-8443"])
+        self.assertEqual(routes[1]["ip"], ["geoip:private"])
+        self.assertEqual(dns[0]["address"], "223.5.5.5")
+        self.assertEqual(dns[0]["domains"], ["geosite:cn", "domain:baidu.com"])
+        self.assertEqual(dns[1]["address"], "119.29.29.29")
+        self.assertIn("1.1.1.1", dns)
+
+    def test_xray_config_includes_panel_dns_routes_before_defaults(self):
+        dns = [
+            {"address": "223.5.5.5", "domains": ["geosite:cn"]},
+            "1.1.1.1",
+        ]
+
+        config = xboard_sync.build_xray_config([], custom_dns_servers=dns)
+        servers = config["dns"]["servers"]
+
+        self.assertEqual(servers[0], {"address": "223.5.5.5", "domains": ["geosite:cn"]})
+        self.assertEqual(servers.count("1.1.1.1"), 1)
+        self.assertEqual(servers.count("8.8.8.8"), 1)
+
     def test_xray_config_validation_rejects_duplicate_ports(self):
         config = {
             "inbounds": [

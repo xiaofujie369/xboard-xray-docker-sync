@@ -876,6 +876,26 @@ def ensure_list(v):
     return []
 
 
+def ensure_str_list(v):
+    v = parse_json_maybe(v)
+
+    if v is None or v == "":
+        return []
+
+    if isinstance(v, list):
+        items = v
+    else:
+        items = re.split(r"[\r\n]+", str(v))
+
+    result = []
+    for item in items:
+        item = str(item).strip()
+        if item:
+            result.append(item)
+
+    return result
+
+
 def extract_custom_outbounds(server):
     """
     Read per-node custom outbounds from XBoard.
@@ -904,16 +924,143 @@ def extract_custom_outbounds(server):
     return []
 
 
+def is_ip_matcher(item):
+    if item.startswith("geoip:"):
+        return True
+    if "/" in item:
+        return True
+    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", item):
+        return True
+    return False
+
+
+def normalize_domain_matcher(item):
+    item = item.strip()
+    if not item:
+        return None
+
+    lower = item.lower()
+    if lower in ["*", "*.*"]:
+        return None
+    if lower.startswith(("geosite:", "regexp:", "domain:", "full:", "keyword:")):
+        return item
+
+    if item.startswith("*."):
+        item = item[2:]
+    if item.startswith("."):
+        item = item[1:]
+    if not item:
+        return None
+
+    return f"domain:{item}"
+
+
+def split_route_match(match_items):
+    domains = []
+    ips = []
+
+    for item in ensure_str_list(match_items):
+        if is_ip_matcher(item):
+            ips.append(item)
+            continue
+
+        domain = normalize_domain_matcher(item)
+        if domain:
+            domains.append(domain)
+
+    return domains, ips
+
+
+def parse_dns_action_value(value):
+    if value in [None, ""]:
+        return []
+
+    text = str(value).strip()
+    text = re.sub(r"^\s*DNS\s*[:：]\s*", "", text, flags=re.I)
+    servers = []
+    for item in re.split(r"[,，;\s]+", text):
+        item = item.strip()
+        if not item:
+            continue
+        servers.append(item)
+
+    return servers
+
+
+def compile_panel_route(route, inbound_tag=None):
+    if not isinstance(route, dict):
+        return [], []
+
+    domains, ips = split_route_match(route.get("match"))
+    action = str(route.get("action", "block")).strip().lower()
+    action_value = route.get("action_value")
+
+    routing_rules = []
+    dns_servers = []
+
+    if action == "dns":
+        for address in parse_dns_action_value(action_value):
+            if domains:
+                dns_servers.append({
+                    "address": address,
+                    "domains": domains
+                })
+            else:
+                dns_servers.append(address)
+        return [], dns_servers
+
+    if action == "direct":
+        outbound = "direct"
+    elif action == "proxy":
+        outbound = str(action_value).strip() if action_value not in [None, ""] else "direct"
+    else:
+        outbound = "block"
+
+    def scoped_rule(rule):
+        if inbound_tag:
+            rule["inboundTag"] = [inbound_tag]
+        return rule
+
+    if domains:
+        routing_rules.append(scoped_rule({
+            "type": "field",
+            "domain": domains,
+            "outboundTag": outbound
+        }))
+
+    if ips:
+        routing_rules.append(scoped_rule({
+            "type": "field",
+            "ip": ips,
+            "outboundTag": outbound
+        }))
+
+    return routing_rules, []
+
+
+def extract_panel_routes(server, inbound_tag=None):
+    if not isinstance(server, dict):
+        return [], []
+
+    routing_rules = []
+    dns_servers = []
+
+    for key in ["routes", "route_rules", "routeRules"]:
+        items = ensure_list(server.get(key))
+        for item in items:
+            rules, dns = compile_panel_route(item, inbound_tag=inbound_tag)
+            routing_rules.extend(rules)
+            dns_servers.extend(dns)
+
+    return routing_rules, dns_servers
+
+
 def extract_custom_routes(server, inbound_tag=None):
     """
     Read per-node custom routes from XBoard.
     Supported field names:
     - custom_routes
     - customRoutes
-
-    Important:
-    Do not parse server.routes here. XBoard routes may include DNS/domain rules,
-    not pure Xray routing rules.
     """
     if not isinstance(server, dict):
         return []
@@ -938,6 +1085,47 @@ def extract_custom_routes(server, inbound_tag=None):
                 routes.append(rr)
 
     return routes
+
+
+def dedupe_dns_servers(entries):
+    grouped = {}
+    order = []
+    defaults = []
+    default_seen = set()
+
+    for entry in entries:
+        if isinstance(entry, str):
+            address = entry.strip()
+            if address and address not in default_seen:
+                defaults.append(address)
+                default_seen.add(address)
+            continue
+
+        if not isinstance(entry, dict):
+            continue
+
+        address = str(entry.get("address", "")).strip()
+        if not address:
+            continue
+
+        if address not in grouped:
+            grouped[address] = {
+                "address": address,
+                "domains": []
+            }
+            order.append(address)
+
+        for domain in ensure_str_list(entry.get("domains")):
+            if domain not in grouped[address]["domains"]:
+                grouped[address]["domains"].append(domain)
+
+    domain_servers = [
+        grouped[address]
+        for address in order
+        if grouped[address]["domains"]
+    ]
+
+    return domain_servers + defaults
 
 
 def dedupe_outbounds(outbounds):
@@ -1276,9 +1464,11 @@ def build_shadowsocks_inbound(config_resp, user_resp, node_id=None):
     }
 
 
-def build_xray_config(inbounds, custom_outbounds=None, custom_routes=None):
+def build_xray_config(inbounds, custom_outbounds=None, custom_routes=None, custom_dns_servers=None):
     custom_outbounds = custom_outbounds or []
     custom_routes = custom_routes or []
+    custom_dns_servers = custom_dns_servers or []
+    dns_servers = dedupe_dns_servers(custom_dns_servers + ["1.1.1.1", "8.8.8.8"])
 
     outbounds = dedupe_outbounds(
         custom_outbounds + [
@@ -1347,10 +1537,7 @@ def build_xray_config(inbounds, custom_outbounds=None, custom_routes=None):
             }
         },
         "dns": {
-            "servers": [
-                "1.1.1.1",
-                "8.8.8.8"
-            ],
+            "servers": dns_servers,
             "queryStrategy": "UseIPv4"
         },
         "inbounds": [
@@ -1536,6 +1723,11 @@ def fetch_node(panel, token, node_id, node_type):
         server,
         inbound_tag=inbound.get("tag")
     )
+    panel_routes, panel_dns_servers = extract_panel_routes(
+        server,
+        inbound_tag=inbound.get("tag")
+    )
+    custom_routes.extend(panel_routes)
 
     if custom_outbounds:
         print(f"[sync] 节点 {node_id}:{node_type} 下发 custom outbounds: {len(custom_outbounds)}", flush=True)
@@ -1543,12 +1735,16 @@ def fetch_node(panel, token, node_id, node_type):
     if custom_routes:
         print(f"[sync] 节点 {node_id}:{node_type} 下发 custom routes: {len(custom_routes)}", flush=True)
 
+    if panel_dns_servers:
+        print(f"[sync] 节点 {node_id}:{node_type} 下发 DNS routes: {len(panel_dns_servers)}", flush=True)
+
     print(f"[sync] 已生成节点 {node_id}:{node_type} -> {inbound['tag']}:{inbound['port']}", flush=True)
 
     return {
         "inbound": inbound,
         "custom_outbounds": custom_outbounds,
-        "custom_routes": custom_routes
+        "custom_routes": custom_routes,
+        "custom_dns_servers": panel_dns_servers
     }
 
 def sync_once():
@@ -1568,6 +1764,7 @@ def sync_once():
     inbounds = []
     custom_outbounds = []
     custom_routes = []
+    custom_dns_servers = []
 
     for node_id, node_type in nodes:
         node_data = fetch_node(panel, token, node_id, node_type)
@@ -1576,6 +1773,7 @@ def sync_once():
         inbounds.append(inbound)
         custom_outbounds.extend(node_data.get("custom_outbounds", []))
         custom_routes.extend(node_data.get("custom_routes", []))
+        custom_dns_servers.extend(node_data.get("custom_dns_servers", []))
 
     # 防止端口重复
     seen_ports = {}
@@ -1588,7 +1786,8 @@ def sync_once():
     xray_config = build_xray_config(
         inbounds,
         custom_outbounds=custom_outbounds,
-        custom_routes=custom_routes
+        custom_routes=custom_routes,
+        custom_dns_servers=custom_dns_servers
     )
 
     new_text = json.dumps(xray_config, ensure_ascii=False, indent=2)

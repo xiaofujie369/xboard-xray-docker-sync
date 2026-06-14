@@ -165,6 +165,8 @@ This project supports XBoard per-node custom outbounds and custom routes.
 
 You can configure different outbound rules for each node in XBoard.
 
+XBoard route groups selected on a node are also synced. `block`, `direct`, and `proxy` actions are compiled into Xray routing rules bound to that node inbound; `dns` actions are compiled into Xray DNS server rules, with wildcard DNS routes becoming default DNS servers.
+
 Example:
 
 - Node 249 uses VLESS Reality inbound on port 443
