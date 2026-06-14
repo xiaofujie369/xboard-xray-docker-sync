@@ -477,12 +477,63 @@ class SyncConfigTests(unittest.TestCase):
 
             with mock.patch.object(xboard_sync, "load_env", return_value=env), \
                  mock.patch.object(xboard_sync, "fetch_node", return_value=node_data), \
+                 mock.patch.object(xboard_sync, "run_xray_config_test"), \
                  mock.patch.object(xboard_sync, "restart_xray", side_effect=RuntimeError("boom")), \
                  mock.patch("builtins.print"):
                 with self.assertRaises(RuntimeError):
                     xboard_sync.sync_once()
 
             self.assertEqual(config_path.read_text(), json.dumps(old_config, ensure_ascii=False, indent=2))
+
+    def test_sync_once_does_not_replace_config_when_xray_pretest_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            log_dir = Path(tmp) / "logs"
+            old_config = {
+                "inbounds": [],
+                "outbounds": [{"tag": "direct", "protocol": "freedom", "settings": {}}],
+            }
+            old_text = json.dumps(old_config, ensure_ascii=False, indent=2)
+            config_path.write_text(old_text)
+            env = {
+                "PANEL_URL": "https://panel.example.com",
+                "PANEL_TOKEN": "token",
+                "NODES": "371:vless",
+                "XRAY_CONFIG": str(config_path),
+                "XRAY_LOG_DIR": str(log_dir),
+                "XRAY_CONTAINER": "xray-core",
+            }
+            node_data = {
+                "inbound": {
+                    "tag": "vless-8443",
+                    "listen": "0.0.0.0",
+                    "port": 8443,
+                    "protocol": "vless",
+                    "settings": {
+                        "clients": [{"id": "uuid", "email": "371:1"}],
+                        "decryption": "none",
+                    },
+                    "streamSettings": {
+                        "network": "tcp",
+                        "security": "none",
+                    },
+                },
+                "custom_outbounds": [],
+                "custom_routes": [],
+            }
+
+            with mock.patch.object(xboard_sync, "load_env", return_value=env), \
+                 mock.patch.object(xboard_sync, "fetch_node", return_value=node_data), \
+                 mock.patch.object(xboard_sync, "run_xray_config_test", side_effect=RuntimeError("bad config")), \
+                 mock.patch.object(xboard_sync, "write_config_atomically") as write_config, \
+                 mock.patch.object(xboard_sync, "restart_xray") as restart, \
+                 mock.patch("builtins.print"):
+                with self.assertRaisesRegex(RuntimeError, "bad config"):
+                    xboard_sync.sync_once()
+
+            self.assertEqual(config_path.read_text(), old_text)
+            write_config.assert_not_called()
+            restart.assert_not_called()
 
     def test_ensure_xray_log_files_creates_writable_logs(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1454,8 +1454,56 @@ def write_config_atomically(config_path, text):
     tmp.replace(config_path)
 
 
+def run_xray_config_test(container, config_path, text, container_config_dir="/etc/xray"):
+    config_path = Path(config_path)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = config_path.with_name(f".{config_path.name}.test")
+    tmp.write_text(text)
+
+    container_tmp = f"{container_config_dir.rstrip('/')}/{tmp.name}"
+    try:
+        result = subprocess.run(
+            ["docker", "exec", container, "xray", "run", "-test", "-config", container_tmp],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    if result.returncode != 0:
+        output = (result.stdout or "") + (result.stderr or "")
+        output = output.strip()[-4000:]
+        raise RuntimeError(f"Xray 配置预检测失败，未替换正式 config.json:\n{output}")
+
+    print("[sync] Xray 配置预检测通过", flush=True)
+
+
+def ensure_container_running(container, retries=10, delay=0.5):
+    last_output = ""
+    for _ in range(retries):
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", container],
+            capture_output=True,
+            text=True
+        )
+        last_output = ((result.stdout or "") + (result.stderr or "")).strip()
+        if result.returncode == 0 and result.stdout.strip() == "true":
+            return
+        time.sleep(delay)
+
+    logs = subprocess.run(
+        ["docker", "logs", container, "--tail=80"],
+        capture_output=True,
+        text=True
+    )
+    log_text = ((logs.stdout or "") + (logs.stderr or "")).strip()[-4000:]
+    raise RuntimeError(f"{container} 重启后未保持 running。inspect={last_output}\n{log_text}")
+
+
 def restart_xray(container):
     subprocess.run(["docker", "restart", container], check=True)
+    ensure_container_running(container)
 
 
 def fetch_node(panel, token, node_id, node_type):
@@ -1512,6 +1560,8 @@ def sync_once():
 
     config_path = Path(env.get("XRAY_CONFIG", "/opt/xray/config/config.json"))
     container = env.get("XRAY_CONTAINER", "xray-core")
+    container_config_dir = env.get("XRAY_CONTAINER_CONFIG_DIR", "/etc/xray")
+    prestart_test = parse_bool(env.get("XRAY_PRESTART_TEST", "true"), default=True)
     backup_keep = int(env.get("XRAY_CONFIG_BACKUPS", "3"))
     ensure_xray_log_files(env.get("XRAY_LOG_DIR", "/opt/xray/logs"))
 
@@ -1546,6 +1596,8 @@ def sync_once():
 
     if sha256_text(new_text) != sha256_text(old_text):
         validate_xray_config(xray_config)
+        if prestart_test:
+            run_xray_config_test(container, config_path, new_text, container_config_dir=container_config_dir)
         backup = backup_config(config_path, keep=backup_keep)
         write_config_atomically(config_path, new_text)
 
@@ -1561,7 +1613,8 @@ def sync_once():
                     print(f"[sync] ERROR: 旧配置恢复后重启仍失败: {rollback_error}", file=sys.stderr, flush=True)
             raise
     else:
-        print("[sync] 配置无变化，不重启", flush=True)
+        ensure_container_running(container, retries=1, delay=0)
+        print("[sync] 配置无变化，xray-core 正在运行", flush=True)
 
 
 def loop():

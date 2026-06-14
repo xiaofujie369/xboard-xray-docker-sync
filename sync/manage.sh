@@ -60,12 +60,13 @@ run_remote_script() {
 edit_panel_config() {
   ensure_runtime_dirs
 
-  local old_panel old_token old_nodes old_interval old_backups panel token nodes interval backups
+  local old_panel old_token old_nodes old_interval old_backups old_pretest panel token nodes interval backups pretest
   old_panel="$(get_env_value PANEL_URL)"
   old_token="$(get_env_value PANEL_TOKEN)"
   old_nodes="$(get_env_value NODES)"
   old_interval="$(get_env_value SYNC_INTERVAL)"
   old_backups="$(get_env_value XRAY_CONFIG_BACKUPS)"
+  old_pretest="$(get_env_value XRAY_PRESTART_TEST)"
 
   echo "当前配置:"
   echo "PANEL_URL=${old_panel:-未设置}"
@@ -73,6 +74,7 @@ edit_panel_config() {
   echo "NODES=${old_nodes:-未设置}"
   echo "SYNC_INTERVAL=${old_interval:-60}"
   echo "XRAY_CONFIG_BACKUPS=${old_backups:-3}"
+  echo "XRAY_PRESTART_TEST=${old_pretest:-true}"
   echo
 
   read -rp "请输入 XBoard 面板地址 [${old_panel:-https://bs.example.com}]: " panel
@@ -81,12 +83,14 @@ edit_panel_config() {
   read -rp "请输入节点列表 [${old_nodes:-371:vless}]: " nodes
   read -rp "同步间隔秒数 [${old_interval:-60}]: " interval
   read -rp "保留 config 备份份数 [${old_backups:-3}]: " backups
+  read -rp "写入前执行 Xray 配置预检测 true/false [${old_pretest:-true}]: " pretest
 
   panel="${panel:-$old_panel}"
   token="${token:-$old_token}"
   nodes="${nodes:-$old_nodes}"
   interval="${interval:-${old_interval:-60}}"
   backups="${backups:-${old_backups:-3}}"
+  pretest="${pretest:-${old_pretest:-true}}"
 
   if [ -z "$panel" ] || [ -z "$token" ] || [ -z "$nodes" ]; then
     err "PANEL_URL / PANEL_TOKEN / NODES 不能为空"
@@ -99,8 +103,10 @@ PANEL_TOKEN=$token
 
 XRAY_CONFIG=/opt/xray/config/config.json
 XRAY_CONTAINER=xray-core
+XRAY_CONTAINER_CONFIG_DIR=/etc/xray
 XRAY_LOG_DIR=/opt/xray/logs
 XRAY_CONFIG_BACKUPS=$backups
+XRAY_PRESTART_TEST=$pretest
 
 SYNC_INTERVAL=$interval
 NODES=$nodes
