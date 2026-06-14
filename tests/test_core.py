@@ -618,19 +618,19 @@ class ReportTrafficTests(unittest.TestCase):
         with mock.patch.object(xboard_report, "load_env", return_value=env), \
              mock.patch.object(xboard_report, "run_statsquery", return_value=stats), \
              mock.patch.object(xboard_report, "read_access_log_since", return_value=({}, {})), \
-             mock.patch.object(xboard_report, "post_alive"), \
-             mock.patch.object(xboard_report, "post_traffic") as post_traffic:
+             mock.patch.object(xboard_report, "collect_status", return_value={"cpu": 1}), \
+             mock.patch.object(xboard_report, "post_node_report") as post_node_report:
             xboard_report.main()
 
         calls = [
-            (args[1], args[2], args[3])
-            for args, _kwargs in post_traffic.call_args_list
+            (args[1], args[2], args[3], args[4], args[5])
+            for args, _kwargs in post_node_report.call_args_list
         ]
         self.assertEqual(
             calls,
             [
-                ("3047", "vless", {1485: [100, 0]}),
-                ("8881", "shadowsocks", {42: [0, 7]}),
+                ("3047", "vless", {1485: [100, 0]}, {}, {"cpu": 1}),
+                ("8881", "shadowsocks", {42: [0, 7]}, {}, {"cpu": 1}),
             ],
         )
 
@@ -646,11 +646,11 @@ class ReportTrafficTests(unittest.TestCase):
         with mock.patch.object(xboard_report, "load_env", return_value=env), \
              mock.patch.object(xboard_report, "run_statsquery", return_value=stats), \
              mock.patch.object(xboard_report, "read_access_log_since", return_value=({}, {})), \
-             mock.patch.object(xboard_report, "post_alive"), \
-             mock.patch.object(xboard_report, "post_traffic") as post_traffic:
+             mock.patch.object(xboard_report, "collect_status", return_value={"cpu": 1}), \
+             mock.patch.object(xboard_report, "post_node_report") as post_node_report:
             xboard_report.main()
 
-        post_traffic.assert_called_once_with(env, "3047", "vless", {1485: [100, 0]})
+        post_node_report.assert_called_once_with(env, "3047", "vless", {1485: [100, 0]}, {}, {"cpu": 1})
 
     def test_main_posts_alive_users_and_zero_traffic_for_online_count(self):
         env = {
@@ -663,55 +663,89 @@ class ReportTrafficTests(unittest.TestCase):
         with mock.patch.object(xboard_report, "load_env", return_value=env), \
              mock.patch.object(xboard_report, "run_statsquery", return_value={"stat": []}), \
              mock.patch.object(xboard_report, "read_access_log_since", return_value=(alive, {})), \
-             mock.patch.object(xboard_report, "post_traffic") as post_traffic, \
-             mock.patch.object(xboard_report, "post_alive") as post_alive:
+             mock.patch.object(xboard_report, "collect_status", return_value={"cpu": 1}), \
+             mock.patch.object(xboard_report, "post_node_report") as post_node_report:
             xboard_report.main()
 
-        post_traffic.assert_called_once_with(env, "3047", "vless", {1485: [0, 0]})
-        post_alive.assert_called_once_with(env, "3047", "vless", {1485: ["1.2.3.4"]})
+        post_node_report.assert_called_once_with(
+            env,
+            "3047",
+            "vless",
+            {1485: [0, 0]},
+            {1485: ["1.2.3.4"]},
+            {"cpu": 1},
+        )
 
-    def test_main_posts_zero_traffic_heartbeat_when_node_has_no_usage(self):
+    def test_alive_to_online_counts_unique_ips(self):
+        self.assertEqual(
+            xboard_report.alive_to_online({1485: ["1.2.3.4", "1.2.3.4", "5.6.7.8"]}),
+            {1485: 2},
+        )
+
+    def test_build_v2_report_payload_matches_xboard_node_shape(self):
+        env = {"PANEL_TOKEN": "token", "REPORT_KERNEL_STATUS": "true"}
+
+        payload = xboard_report.build_v2_report_payload(
+            env,
+            "3047",
+            "vless",
+            {1485: [100, 200]},
+            {1485: ["1.2.3.4"]},
+            {"cpu": 1, "mem": {"total": 2, "used": 1}},
+        )
+
+        self.assertEqual(payload["token"], "token")
+        self.assertEqual(payload["node_id"], 3047)
+        self.assertEqual(payload["node_type"], "vless")
+        self.assertEqual(payload["traffic"], {"1485": [100, 200]})
+        self.assertEqual(payload["alive"], {"1485": ["1.2.3.4"]})
+        self.assertEqual(payload["online"], {"1485": 1})
+        self.assertEqual(payload["status"]["cpu"], 1)
+        self.assertEqual(payload["metrics"], {"kernel_status": True})
+
+    def test_post_node_report_uses_v2_report_without_user_fetch(self):
         env = {
             "PANEL_URL": "https://panel.example.com",
             "PANEL_TOKEN": "token",
-            "NODES": "3047:vless",
+        }
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {"ok": True}
+
+        with mock.patch.object(xboard_report.requests, "post", return_value=response) as post, \
+             mock.patch("builtins.print"):
+            xboard_report.post_node_report(env, "3047", "vless", {}, {}, {"cpu": 1})
+
+        post.assert_called_once()
+        self.assertEqual(post.call_args.args[0], "https://panel.example.com/api/v2/server/report")
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["node_id"], 3047)
+        self.assertEqual(payload["status"], {"cpu": 1})
+        self.assertNotIn("traffic", payload)
+        self.assertNotIn("alive", payload)
+
+    def test_post_node_report_falls_back_to_legacy_endpoints(self):
+        env = {
+            "PANEL_URL": "https://panel.example.com",
+            "PANEL_TOKEN": "token",
         }
 
-        with mock.patch.object(xboard_report, "load_env", return_value=env), \
-             mock.patch.object(xboard_report, "run_statsquery", return_value={"stat": []}), \
-             mock.patch.object(xboard_report, "read_access_log_since", return_value=({}, {})), \
-             mock.patch.object(xboard_report, "fetch_first_user_id", return_value=1485), \
+        with mock.patch.object(xboard_report, "post_report_v2", side_effect=RuntimeError("boom")), \
              mock.patch.object(xboard_report, "post_traffic") as post_traffic, \
              mock.patch.object(xboard_report, "post_alive") as post_alive, \
+             mock.patch.object(xboard_report, "post_status_legacy") as post_status, \
              mock.patch("builtins.print"):
-            xboard_report.main()
+            xboard_report.post_node_report(
+                env,
+                "3047",
+                "vless",
+                {1485: [1, 2]},
+                {1485: ["1.2.3.4"]},
+                {"cpu": 1},
+            )
 
-        post_traffic.assert_called_once_with(env, "3047", "vless", {1485: [0, 0]})
-        post_alive.assert_called_once_with(env, "3047", "vless", {})
-
-    def test_main_can_disable_zero_traffic_heartbeat(self):
-        env = {
-            "PANEL_URL": "https://panel.example.com",
-            "PANEL_TOKEN": "token",
-            "NODES": "3047:vless",
-            "REPORT_EMPTY_TRAFFIC_HEARTBEAT": "false",
-        }
-
-        with mock.patch.object(xboard_report, "load_env", return_value=env), \
-             mock.patch.object(xboard_report, "run_statsquery", return_value={"stat": []}), \
-             mock.patch.object(xboard_report, "read_access_log_since", return_value=({}, {})), \
-             mock.patch.object(xboard_report, "fetch_first_user_id") as fetch_user, \
-             mock.patch.object(xboard_report, "post_traffic") as post_traffic, \
-             mock.patch.object(xboard_report, "post_alive"):
-            xboard_report.main()
-
-        fetch_user.assert_not_called()
-        post_traffic.assert_called_once_with(env, "3047", "vless", {})
-
-    def test_first_user_id_reads_common_user_response_shapes(self):
-        self.assertEqual(xboard_report.first_user_id({"users": [{"id": "1485"}]}), 1485)
-        self.assertEqual(xboard_report.first_user_id({"data": {"users": [{"user_id": 42}]}}), 42)
-        self.assertIsNone(xboard_report.first_user_id({"users": [{"uuid": "not-an-int"}]}))
+        post_traffic.assert_called_once_with(env, "3047", "vless", {1485: [1, 2]})
+        post_alive.assert_called_once_with(env, "3047", "vless", {1485: ["1.2.3.4"]})
+        post_status.assert_called_once_with(env, "3047", "vless", {"cpu": 1})
 
     def test_post_traffic_skips_empty_payload(self):
         with mock.patch.object(xboard_report.requests, "post") as post, \

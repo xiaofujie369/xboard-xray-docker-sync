@@ -124,9 +124,10 @@ Menu features:
 
 ## Traffic and Online Reporting
 
-xboard-report reads Xray Stats API for per-user traffic and pushes it to XBoard.
+xboard-report reads Xray Stats API and reports to XBoard through `/api/v2/server/report`.
+Each report includes node status, so the panel can keep the node online even when no user traffic is generated.
 
-It also reads /opt/xray/logs/access.log incrementally to report real user IPs to XBoard alive API.
+It also reads /opt/xray/logs/access.log incrementally to report real user IPs and online counts.
 
 If online users or traffic are not visible, run:
 

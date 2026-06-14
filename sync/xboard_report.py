@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import json
+import shutil
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import requests
@@ -77,59 +79,6 @@ def get_nodes(env):
         raise RuntimeError("NODES cannot be empty; expected node_id:protocol")
 
     return nodes
-
-
-def get_users_list(user_resp):
-    if isinstance(user_resp, dict):
-        if isinstance(user_resp.get("users"), list):
-            return user_resp["users"]
-        if isinstance(user_resp.get("data"), list):
-            return user_resp["data"]
-        if isinstance(user_resp.get("data"), dict):
-            data = user_resp["data"]
-            if isinstance(data.get("users"), list):
-                return data["users"]
-
-    if isinstance(user_resp, list):
-        return user_resp
-
-    return []
-
-
-def first_user_id(user_resp):
-    for user in get_users_list(user_resp):
-        if not isinstance(user, dict):
-            continue
-
-        for key in ["id", "user_id", "uid", "email"]:
-            value = user.get(key)
-            if value in [None, ""]:
-                continue
-            try:
-                return int(value)
-            except Exception:
-                continue
-
-    return None
-
-
-def fetch_first_user_id(env, node_id, node_type):
-    panel = env["PANEL_URL"].rstrip("/")
-    token = env["PANEL_TOKEN"]
-    timeout = int(env.get("REPORT_API_TIMEOUT", "25"))
-
-    url = f"{panel}/api/v1/server/UniProxy/user?node_id={node_id}&node_type={node_type}&token={token}"
-    response = requests.get(url, timeout=timeout)
-
-    try:
-        data = response.json()
-    except Exception:
-        data = response.text[:500]
-
-    if response.status_code >= 400:
-        raise RuntimeError(f"user fetch failed for node {node_id}:{node_type}: HTTP {response.status_code}: {data}")
-
-    return first_user_id(data)
 
 
 def run_statsquery():
@@ -418,20 +367,159 @@ def include_alive_users_in_traffic(scoped_traffic, scoped_alive):
             traffic.setdefault(uid, [0, 0])
 
 
-def ensure_heartbeat_traffic(env, node_id, node_type, traffic):
+def to_panel_int(value):
+    try:
+        return int(value)
+    except Exception:
+        return value
+
+
+def payload_with_string_keys(data):
+    return {str(k): v for k, v in data.items()}
+
+
+def alive_to_online(alive):
+    return {
+        uid: len(set(ips))
+        for uid, ips in alive.items()
+        if ips
+    }
+
+
+def read_cpu_snapshot(path="/proc/stat"):
+    try:
+        line = Path(path).read_text().splitlines()[0]
+    except Exception:
+        return None
+
+    parts = line.split()
+    if not parts or parts[0] != "cpu":
+        return None
+
+    values = []
+    for item in parts[1:]:
+        try:
+            values.append(int(item))
+        except Exception:
+            values.append(0)
+
+    if len(values) < 4:
+        return None
+
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    total = sum(values)
+    return total, idle
+
+
+def collect_cpu_percent():
+    first = read_cpu_snapshot()
+    if not first:
+        return 0.0
+
+    time.sleep(0.1)
+
+    second = read_cpu_snapshot()
+    if not second:
+        return 0.0
+
+    total_delta = second[0] - first[0]
+    idle_delta = second[1] - first[1]
+    if total_delta <= 0:
+        return 0.0
+
+    return round(max(0.0, min(100.0, (1 - idle_delta / total_delta) * 100)), 2)
+
+
+def collect_memory_status(path="/proc/meminfo"):
+    try:
+        lines = Path(path).read_text().splitlines()
+    except Exception:
+        return (0, 0), (0, 0)
+
+    values = {}
+    for line in lines:
+        if ":" not in line:
+            continue
+        key, raw = line.split(":", 1)
+        parts = raw.strip().split()
+        if not parts:
+            continue
+        try:
+            values[key] = int(parts[0]) * 1024
+        except Exception:
+            continue
+
+    mem_total = values.get("MemTotal", 0)
+    mem_available = values.get("MemAvailable", values.get("MemFree", 0))
+    swap_total = values.get("SwapTotal", 0)
+    swap_free = values.get("SwapFree", 0)
+
+    mem_used = max(0, mem_total - mem_available)
+    swap_used = max(0, swap_total - swap_free)
+    return (mem_total, mem_used), (swap_total, swap_used)
+
+
+def collect_disk_status(path="/"):
+    try:
+        usage = shutil.disk_usage(path)
+        return usage.total, usage.used
+    except Exception:
+        return 0, 0
+
+
+def collect_status():
+    mem, swap = collect_memory_status()
+    disk = collect_disk_status()
+    return {
+        "cpu": collect_cpu_percent(),
+        "mem": {"total": mem[0], "used": mem[1]},
+        "swap": {"total": swap[0], "used": swap[1]},
+        "disk": {"total": disk[0], "used": disk[1]},
+    }
+
+
+def build_v2_report_payload(env, node_id, node_type, traffic, alive, status):
+    payload = {
+        "token": env["PANEL_TOKEN"],
+        "node_id": to_panel_int(node_id),
+        "node_type": node_type,
+        "status": status,
+    }
+
     if traffic:
-        return traffic
+        payload["traffic"] = payload_with_string_keys(traffic)
 
-    if not parse_bool(env.get("REPORT_EMPTY_TRAFFIC_HEARTBEAT", "true"), default=True):
-        return traffic
+    if alive:
+        payload["alive"] = payload_with_string_keys(alive)
+        online = alive_to_online(alive)
+        if online:
+            payload["online"] = payload_with_string_keys(online)
 
-    uid = fetch_first_user_id(env, node_id, node_type)
-    if uid is None:
-        print(f"[report] node {node_id}:{node_type} heartbeat skipped: no available user")
-        return traffic
+    if parse_bool(env.get("REPORT_KERNEL_STATUS", "true"), default=True):
+        payload["metrics"] = {"kernel_status": True}
 
-    print(f"[report] node {node_id}:{node_type} heartbeat traffic push for user {uid}")
-    return {uid: [0, 0]}
+    return payload
+
+
+def post_report_v2(env, node_id, node_type, traffic, alive, status):
+    panel = env["PANEL_URL"].rstrip("/")
+    url = f"{panel}/api/v2/server/report"
+    payload = build_v2_report_payload(env, node_id, node_type, traffic, alive, status)
+
+    r = requests.post(url, json=payload, timeout=25)
+
+    try:
+        resp = r.json()
+    except Exception:
+        resp = r.text[:500]
+
+    if r.status_code >= 400:
+        raise RuntimeError(f"v2 report failed HTTP {r.status_code}: {resp}")
+
+    print(
+        f"[report] posted v2 report for node {node_id}:{node_type}: "
+        f"traffic={len(traffic)}, alive={len(alive)}, status=1"
+    )
 
 
 def post_traffic(env, node_id, node_type, traffic):
@@ -480,6 +568,40 @@ def post_alive(env, node_id, node_type, alive):
     print(f"[report] pushed alive devices for {len(alive)} users on node {node_id}:{node_type}: {resp}")
 
 
+def post_status_legacy(env, node_id, node_type, status):
+    panel = env["PANEL_URL"].rstrip("/")
+    token = env["PANEL_TOKEN"]
+
+    url = f"{panel}/api/v1/server/UniProxy/status?node_id={node_id}&node_type={node_type}&token={token}"
+
+    r = requests.post(url, json=status, timeout=25)
+
+    try:
+        resp = r.json()
+    except Exception:
+        resp = r.text[:500]
+
+    if r.status_code >= 400:
+        raise RuntimeError(f"legacy status failed HTTP {r.status_code}: {resp}")
+
+    print(f"[report] pushed legacy status for node {node_id}:{node_type}: {resp}")
+
+
+def post_node_report(env, node_id, node_type, traffic, alive, status):
+    if parse_bool(env.get("REPORT_USE_V2_REPORT", "true"), default=True):
+        try:
+            post_report_v2(env, node_id, node_type, traffic, alive, status)
+            return
+        except Exception as e:
+            if not parse_bool(env.get("REPORT_V2_FALLBACK", "true"), default=True):
+                raise
+            print(f"[report] v2 report failed for node {node_id}:{node_type}, using legacy fallback: {e}")
+
+    post_traffic(env, node_id, node_type, traffic)
+    post_alive(env, node_id, node_type, alive)
+    post_status_legacy(env, node_id, node_type, status)
+
+
 def main():
     env = load_env()
     nodes = get_nodes(env)
@@ -491,10 +613,17 @@ def main():
     merge_legacy_map(scoped_alive, legacy_alive, nodes, "alive users")
     include_alive_users_in_traffic(scoped_traffic, scoped_alive)
 
+    status = collect_status()
+
     for node_id, node_type in nodes:
-        traffic = ensure_heartbeat_traffic(env, node_id, node_type, scoped_traffic.get(node_id, {}))
-        post_traffic(env, node_id, node_type, traffic)
-        post_alive(env, node_id, node_type, scoped_alive.get(node_id, {}))
+        post_node_report(
+            env,
+            node_id,
+            node_type,
+            scoped_traffic.get(node_id, {}),
+            scoped_alive.get(node_id, {}),
+            status,
+        )
 
 
 if __name__ == "__main__":
