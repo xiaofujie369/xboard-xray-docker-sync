@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import json
+import copy
 import time
 import hashlib
 import glob
@@ -924,6 +925,73 @@ def extract_custom_outbounds(server):
     return []
 
 
+def safe_tag_part(value):
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value).strip())
+    return value.strip("-") or "node"
+
+
+def scoped_custom_outbound_tag(node_id, tag):
+    return f"node-{safe_tag_part(node_id)}-{safe_tag_part(tag)}"
+
+
+def scope_custom_outbounds(outbounds, node_id):
+    scoped = []
+    tag_map = {}
+
+    for outbound in outbounds:
+        if not isinstance(outbound, dict):
+            continue
+
+        old_tag = str(outbound.get("tag", "")).strip()
+        if not old_tag:
+            continue
+
+        new_tag = scoped_custom_outbound_tag(node_id, old_tag)
+        item = copy.deepcopy(outbound)
+        item["tag"] = new_tag
+        scoped.append(item)
+        tag_map[old_tag] = new_tag
+
+    return scoped, tag_map
+
+
+def as_string_list(value):
+    value = parse_json_maybe(value)
+    if value in [None, ""]:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def route_applies_to_inbound(route, inbound_tag):
+    if not inbound_tag:
+        return True
+    if "inboundTag" not in route:
+        return True
+    return inbound_tag in as_string_list(route.get("inboundTag"))
+
+
+def rewrite_route_for_node(route, inbound_tag=None, outbound_tag_map=None):
+    if not isinstance(route, dict):
+        return None
+
+    rr = copy.deepcopy(route)
+
+    if inbound_tag and not route_applies_to_inbound(rr, inbound_tag):
+        return None
+
+    if inbound_tag:
+        rr["inboundTag"] = [inbound_tag]
+
+    outbound_tag_map = outbound_tag_map or {}
+    outbound = rr.get("outboundTag")
+    if outbound in outbound_tag_map:
+        rr["outboundTag"] = outbound_tag_map[outbound]
+
+    return rr
+
+
 def is_ip_matcher(item):
     if item.startswith("geoip:"):
         return True
@@ -997,7 +1065,7 @@ def parse_dns_action_value(value):
     return servers
 
 
-def compile_panel_route(route, inbound_tag=None, allow_default_dns=False):
+def compile_panel_route(route, inbound_tag=None, allow_default_dns=False, outbound_tag_map=None):
     if not isinstance(route, dict):
         return [], []
 
@@ -1025,6 +1093,7 @@ def compile_panel_route(route, inbound_tag=None, allow_default_dns=False):
         outbound = "direct"
     elif action == "proxy":
         outbound = str(action_value).strip() if action_value not in [None, ""] else "direct"
+        outbound = (outbound_tag_map or {}).get(outbound, outbound)
     else:
         outbound = "block"
 
@@ -1050,7 +1119,13 @@ def compile_panel_route(route, inbound_tag=None, allow_default_dns=False):
     return routing_rules, []
 
 
-def extract_panel_routes(server, inbound_tag=None, include_dns=True, allow_default_dns=False):
+def extract_panel_routes(
+    server,
+    inbound_tag=None,
+    include_dns=True,
+    allow_default_dns=False,
+    outbound_tag_map=None,
+):
     if not isinstance(server, dict):
         return [], []
 
@@ -1063,7 +1138,8 @@ def extract_panel_routes(server, inbound_tag=None, include_dns=True, allow_defau
             rules, dns = compile_panel_route(
                 item,
                 inbound_tag=inbound_tag,
-                allow_default_dns=allow_default_dns
+                allow_default_dns=allow_default_dns,
+                outbound_tag_map=outbound_tag_map,
             )
             routing_rules.extend(rules)
             if include_dns:
@@ -1072,7 +1148,7 @@ def extract_panel_routes(server, inbound_tag=None, include_dns=True, allow_defau
     return routing_rules, dns_servers
 
 
-def extract_custom_routes(server, inbound_tag=None):
+def extract_custom_routes(server, inbound_tag=None, outbound_tag_map=None):
     """
     Read per-node custom routes from XBoard.
     Supported field names:
@@ -1092,14 +1168,13 @@ def extract_custom_routes(server, inbound_tag=None):
 
         for item in items:
             if isinstance(item, dict) and item.get("type") == "field" and item.get("outboundTag"):
-                rr = dict(item)
-
-                # Per-node isolation:
-                # If XBoard route does not include inboundTag, automatically bind it to this node inbound.
-                if inbound_tag and "inboundTag" not in rr:
-                    rr["inboundTag"] = [inbound_tag]
-
-                routes.append(rr)
+                rr = rewrite_route_for_node(
+                    item,
+                    inbound_tag=inbound_tag,
+                    outbound_tag_map=outbound_tag_map,
+                )
+                if rr:
+                    routes.append(rr)
 
     return routes
 
@@ -1743,10 +1818,14 @@ def fetch_node(
             f"官方 xray-core 不支持 AnyTLS/Hysteria2/TUIC，请用 sing-box。"
         )
 
-    custom_outbounds = extract_custom_outbounds(server)
+    custom_outbounds, outbound_tag_map = scope_custom_outbounds(
+        extract_custom_outbounds(server),
+        node_id,
+    )
     custom_routes = extract_custom_routes(
         server,
-        inbound_tag=inbound.get("tag")
+        inbound_tag=inbound.get("tag"),
+        outbound_tag_map=outbound_tag_map,
     )
     panel_routes = []
     panel_dns_servers = []
@@ -1756,6 +1835,7 @@ def fetch_node(
             inbound_tag=inbound.get("tag"),
             include_dns=enable_panel_dns_routes,
             allow_default_dns=enable_panel_default_dns,
+            outbound_tag_map=outbound_tag_map,
         )
     custom_routes.extend(panel_routes)
 

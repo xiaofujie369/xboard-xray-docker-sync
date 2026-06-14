@@ -459,6 +459,71 @@ class SyncConfigTests(unittest.TestCase):
             ([], ["9.9.9.9"]),
         )
 
+    def test_custom_outbounds_are_scoped_and_routes_are_rewritten(self):
+        outbounds, tag_map = xboard_sync.scope_custom_outbounds(
+            [
+                {
+                    "tag": "ss-us",
+                    "protocol": "shadowsocks",
+                    "settings": {"servers": []},
+                }
+            ],
+            "266",
+        )
+
+        self.assertEqual(outbounds[0]["tag"], "node-266-ss-us")
+        self.assertEqual(tag_map, {"ss-us": "node-266-ss-us"})
+
+        routes = xboard_sync.extract_custom_routes(
+            {
+                "custom_routes": [
+                    {
+                        "type": "field",
+                        "outboundTag": "ss-us",
+                    }
+                ]
+            },
+            inbound_tag="shadowsocks-8333",
+            outbound_tag_map=tag_map,
+        )
+
+        self.assertEqual(routes[0]["inboundTag"], ["shadowsocks-8333"])
+        self.assertEqual(routes[0]["outboundTag"], "node-266-ss-us")
+
+    def test_custom_routes_cannot_target_another_node_inbound(self):
+        routes = xboard_sync.extract_custom_routes(
+            {
+                "custom_routes": [
+                    {
+                        "type": "field",
+                        "inboundTag": ["vless-9443"],
+                        "outboundTag": "ss-us",
+                    }
+                ]
+            },
+            inbound_tag="shadowsocks-8333",
+            outbound_tag_map={"ss-us": "node-266-ss-us"},
+        )
+
+        self.assertEqual(routes, [])
+
+    def test_panel_proxy_route_rewrites_local_custom_outbound_tag(self):
+        routes, _dns = xboard_sync.extract_panel_routes(
+            {
+                "routes": [
+                    {
+                        "match": [".example.com"],
+                        "action": "proxy",
+                        "action_value": "ss-us",
+                    }
+                ]
+            },
+            inbound_tag="shadowsocks-8333",
+            outbound_tag_map={"ss-us": "node-266-ss-us"},
+        )
+
+        self.assertEqual(routes[0]["outboundTag"], "node-266-ss-us")
+
     def test_xray_config_includes_panel_dns_routes_before_defaults(self):
         dns = [
             {"address": "223.5.5.5", "domains": ["geosite:cn"]},
