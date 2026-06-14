@@ -602,6 +602,29 @@ class ReportTrafficTests(unittest.TestCase):
             self.assertEqual(scoped, {"3047": {42: ["5.6.7.8"]}})
             self.assertEqual(legacy, {})
 
+    def test_refresh_online_cache_keeps_recent_alive_users(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            env = {
+                "REPORT_STATE": str(state_path),
+                "REPORT_ONLINE_TTL": "180",
+            }
+            nodes = [("3047", "vless")]
+
+            active = xboard_report.refresh_online_cache(
+                env,
+                {"3047": {1485: ["1.2.3.4"]}},
+                nodes,
+                now=1000,
+            )
+            self.assertEqual(active, {"3047": {1485: ["1.2.3.4"]}})
+
+            active = xboard_report.refresh_online_cache(env, {}, nodes, now=1100)
+            self.assertEqual(active, {"3047": {1485: ["1.2.3.4"]}})
+
+            active = xboard_report.refresh_online_cache(env, {}, nodes, now=1200)
+            self.assertEqual(active, {})
+
     def test_main_posts_scoped_traffic_to_each_configured_node(self):
         stats = {
             "stat": [
@@ -618,6 +641,7 @@ class ReportTrafficTests(unittest.TestCase):
         with mock.patch.object(xboard_report, "load_env", return_value=env), \
              mock.patch.object(xboard_report, "run_statsquery", return_value=stats), \
              mock.patch.object(xboard_report, "read_access_log_since", return_value=({}, {})), \
+             mock.patch.object(xboard_report, "refresh_online_cache", return_value={}), \
              mock.patch.object(xboard_report, "collect_status", return_value={"cpu": 1}), \
              mock.patch.object(xboard_report, "post_node_report") as post_node_report:
             xboard_report.main()
@@ -646,6 +670,7 @@ class ReportTrafficTests(unittest.TestCase):
         with mock.patch.object(xboard_report, "load_env", return_value=env), \
              mock.patch.object(xboard_report, "run_statsquery", return_value=stats), \
              mock.patch.object(xboard_report, "read_access_log_since", return_value=({}, {})), \
+             mock.patch.object(xboard_report, "refresh_online_cache", return_value={}), \
              mock.patch.object(xboard_report, "collect_status", return_value={"cpu": 1}), \
              mock.patch.object(xboard_report, "post_node_report") as post_node_report:
             xboard_report.main()
@@ -663,6 +688,7 @@ class ReportTrafficTests(unittest.TestCase):
         with mock.patch.object(xboard_report, "load_env", return_value=env), \
              mock.patch.object(xboard_report, "run_statsquery", return_value={"stat": []}), \
              mock.patch.object(xboard_report, "read_access_log_since", return_value=(alive, {})), \
+             mock.patch.object(xboard_report, "refresh_online_cache", return_value=alive), \
              mock.patch.object(xboard_report, "collect_status", return_value={"cpu": 1}), \
              mock.patch.object(xboard_report, "post_node_report") as post_node_report:
             xboard_report.main()

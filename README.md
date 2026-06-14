@@ -128,6 +128,7 @@ xboard-report reads Xray Stats API and reports to XBoard through `/api/v2/server
 Each report includes node status, so the panel can keep the node online even when no user traffic is generated.
 
 It also reads /opt/xray/logs/access.log incrementally to report real user IPs and online counts.
+Recently active users are kept for `REPORT_ONLINE_TTL` seconds, default `180`, so online counts do not drop just because no new access log line appeared in the current report window.
 
 If online users or traffic are not visible, run:
 

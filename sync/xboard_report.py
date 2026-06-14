@@ -56,6 +56,13 @@ def parse_bool(v, default=False):
     return default
 
 
+def parse_int(v, default=0):
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+
 def get_nodes(env):
     nodes = []
 
@@ -340,6 +347,64 @@ def read_access_log_since(env):
     return parse_alive_from_access_lines(lines)
 
 
+def report_state_path(env):
+    return env.get("REPORT_STATE", STATE_PATH)
+
+
+def configured_node_ids(nodes):
+    return {node_id for node_id, _node_type in nodes}
+
+
+def refresh_online_cache(env, scoped_alive, nodes, now=None):
+    ttl = max(0, parse_int(env.get("REPORT_ONLINE_TTL", "180"), default=180))
+    now = int(time.time() if now is None else now)
+    state_path = report_state_path(env)
+    state = load_state(state_path)
+    online_state = state.setdefault("online", {})
+    node_state = online_state.setdefault("nodes", {})
+    active = {}
+    configured = configured_node_ids(nodes)
+
+    for node_id in list(node_state.keys()):
+        if node_id not in configured:
+            del node_state[node_id]
+
+    for node_id, alive in scoped_alive.items():
+        users = node_state.setdefault(node_id, {})
+        for uid, ips in alive.items():
+            users[str(uid)] = {
+                "last_seen": now,
+                "ips": sorted(set(ips)),
+            }
+
+    for node_id in configured:
+        users = node_state.get(node_id, {})
+        kept = {}
+        for uid_raw, item in users.items():
+            try:
+                last_seen = int(item.get("last_seen", 0) or 0)
+                uid = int(uid_raw)
+            except Exception:
+                continue
+
+            if now - last_seen > ttl:
+                continue
+
+            ips = item.get("ips") or []
+            if ips:
+                kept[str(uid)] = {"last_seen": last_seen, "ips": sorted(set(ips))}
+                active.setdefault(node_id, {})[uid] = sorted(set(ips))
+
+        if kept:
+            node_state[node_id] = kept
+        else:
+            node_state.pop(node_id, None)
+
+    online_state["ttl"] = ttl
+    save_state(state_path, state)
+    return active
+
+
 def merge_legacy_map(scoped, legacy, nodes, label):
     if not legacy:
         return
@@ -518,7 +583,7 @@ def post_report_v2(env, node_id, node_type, traffic, alive, status):
 
     print(
         f"[report] posted v2 report for node {node_id}:{node_type}: "
-        f"traffic={len(traffic)}, alive={len(alive)}, status=1"
+        f"traffic={len(traffic)}, alive={len(alive)}, online={len(alive_to_online(alive))}, status=1"
     )
 
 
@@ -611,7 +676,8 @@ def main():
 
     merge_legacy_map(scoped_traffic, legacy_traffic, nodes, "traffic")
     merge_legacy_map(scoped_alive, legacy_alive, nodes, "alive users")
-    include_alive_users_in_traffic(scoped_traffic, scoped_alive)
+    active_alive = refresh_online_cache(env, scoped_alive, nodes)
+    include_alive_users_in_traffic(scoped_traffic, active_alive)
 
     status = collect_status()
 
@@ -621,7 +687,7 @@ def main():
             node_id,
             node_type,
             scoped_traffic.get(node_id, {}),
-            scoped_alive.get(node_id, {}),
+            active_alive.get(node_id, {}),
             status,
         )
 
