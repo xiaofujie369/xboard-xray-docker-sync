@@ -18,6 +18,16 @@ def load_module(name, relative_path):
 xboard_sync = load_module("xboard_sync", "sync/xboard_sync.py")
 xboard_report = load_module("xboard_report", "sync/xboard_report.py")
 
+TEST_CERT = """-----BEGIN CERTIFICATE-----
+MIIBtestcert
+-----END CERTIFICATE-----
+"""
+
+TEST_KEY = """-----BEGIN EC PRIVATE KEY-----
+MHctestkey
+-----END EC PRIVATE KEY-----
+"""
+
 
 class NodeParsingTests(unittest.TestCase):
     def test_sync_parses_multi_node_env_with_aliases(self):
@@ -99,6 +109,151 @@ class SyncConfigTests(unittest.TestCase):
 
         self.assertEqual(inbound["tag"], "vless-443")
         self.assertEqual(inbound["settings"]["clients"][0]["email"], "3047:1485")
+
+    def test_tls_cert_config_content_writes_cert_and_injects_container_paths(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(xboard_sync, "HOST_CERT_DIR", tmp), \
+             mock.patch.object(xboard_sync, "CONTAINER_CERT_DIR", "/etc/xray/certs"), \
+             mock.patch("builtins.print"):
+            server = {
+                "id": 371,
+                "protocol": "vless",
+                "server_port": 8443,
+                "network": "tcp",
+                "tls": 1,
+                "tls_settings": {"server_name": "link.shy521.com"},
+                "cert_config": {
+                    "cert_mode": "content",
+                    "certificateContent": TEST_CERT.replace("\n", "\\n"),
+                    "privateKey": TEST_KEY.replace("\n", "\\n"),
+                },
+            }
+
+            stream = xboard_sync.build_stream_settings(server)
+
+            self.assertEqual(stream["security"], "tls")
+            self.assertEqual(stream["tlsSettings"]["serverName"], "link.shy521.com")
+            self.assertEqual(
+                stream["tlsSettings"]["certificates"],
+                [
+                    {
+                        "certificateFile": "/etc/xray/certs/link.shy521.com.crt",
+                        "keyFile": "/etc/xray/certs/link.shy521.com.key",
+                    }
+                ],
+            )
+            self.assertEqual((Path(tmp) / "link.shy521.com.crt").read_text(), TEST_CERT)
+            self.assertEqual((Path(tmp) / "link.shy521.com.key").read_text(), TEST_KEY)
+
+    def test_tls_uses_existing_local_cert_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(xboard_sync, "HOST_CERT_DIR", tmp), \
+             mock.patch.object(xboard_sync, "CONTAINER_CERT_DIR", "/etc/xray/certs"), \
+             mock.patch("builtins.print"):
+            (Path(tmp) / "link.shy521.com.crt").write_text(TEST_CERT)
+            (Path(tmp) / "link.shy521.com.key").write_text(TEST_KEY)
+            server = {
+                "id": 371,
+                "protocol": "vless",
+                "server_port": 8443,
+                "network": "tcp",
+                "tls": 1,
+                "tls_settings": {"server_name": "link.shy521.com"},
+            }
+
+            stream = xboard_sync.build_stream_settings(server)
+
+            self.assertEqual(
+                stream["tlsSettings"]["certificates"],
+                [
+                    {
+                        "certificateFile": "/etc/xray/certs/link.shy521.com.crt",
+                        "keyFile": "/etc/xray/certs/link.shy521.com.key",
+                    }
+                ],
+            )
+
+    def test_tls_server_name_can_fallback_to_cert_domain(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(xboard_sync, "HOST_CERT_DIR", tmp), \
+             mock.patch.object(xboard_sync, "CONTAINER_CERT_DIR", "/etc/xray/certs"), \
+             mock.patch("builtins.print"):
+            server = {
+                "id": 371,
+                "protocol": "vless",
+                "server_port": 8443,
+                "network": "tcp",
+                "tls": 1,
+                "tls_settings": {},
+                "cert_config": {
+                    "cert_mode": "content",
+                    "cert_domain": "link.shy521.com",
+                    "cert": TEST_CERT,
+                    "key": TEST_KEY,
+                },
+            }
+
+            stream = xboard_sync.build_stream_settings(server)
+
+            self.assertEqual(stream["tlsSettings"]["serverName"], "link.shy521.com")
+            self.assertEqual(
+                stream["tlsSettings"]["certificates"][0]["certificateFile"],
+                "/etc/xray/certs/link.shy521.com.crt",
+            )
+
+    def test_tls_preserves_panel_provided_container_cert_paths(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(xboard_sync, "HOST_CERT_DIR", tmp), \
+             mock.patch("builtins.print"):
+            server = {
+                "id": 371,
+                "protocol": "vless",
+                "server_port": 8443,
+                "network": "tcp",
+                "tls": 1,
+                "tls_settings": {"server_name": "link.shy521.com"},
+                "cert_config": {
+                    "certificateFile": "/etc/xray/certs/custom.crt",
+                    "keyFile": "/etc/xray/certs/custom.key",
+                },
+            }
+
+            stream = xboard_sync.build_stream_settings(server)
+
+            self.assertEqual(
+                stream["tlsSettings"]["certificates"],
+                [
+                    {
+                        "certificateFile": "/etc/xray/certs/custom.crt",
+                        "keyFile": "/etc/xray/certs/custom.key",
+                    }
+                ],
+            )
+
+    def test_tls_safe_cert_filename_blocks_path_traversal(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(xboard_sync, "HOST_CERT_DIR", tmp), \
+             mock.patch.object(xboard_sync, "CONTAINER_CERT_DIR", "/etc/xray/certs"), \
+             mock.patch("builtins.print"):
+            server = {
+                "id": 371,
+                "protocol": "vless",
+                "server_port": 8443,
+                "network": "tcp",
+                "tls": 1,
+                "tls_settings": {"server_name": "../link.shy521.com/../../evil"},
+                "cert_config": {
+                    "cert": TEST_CERT,
+                    "key": TEST_KEY,
+                },
+            }
+
+            stream = xboard_sync.build_stream_settings(server)
+
+            cert_file = stream["tlsSettings"]["certificates"][0]["certificateFile"]
+            self.assertTrue(cert_file.startswith("/etc/xray/certs/"))
+            self.assertNotIn("..", cert_file)
+            self.assertTrue((Path(tmp) / "link.shy521.com_._._evil.crt").exists())
 
     def test_xray_config_includes_stats_api_and_user_policies(self):
         config = xboard_sync.build_xray_config([])

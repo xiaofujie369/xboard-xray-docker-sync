@@ -3,12 +3,17 @@ import sys
 import json
 import time
 import hashlib
+import glob
+import os
+import re
 import subprocess
 from pathlib import Path
 
 import requests
 
 ENV_PATH = "/opt/xray-sync/.env"
+HOST_CERT_DIR = "/opt/xray/config/certs"
+CONTAINER_CERT_DIR = "/etc/xray/certs"
 
 
 def load_env():
@@ -176,6 +181,269 @@ def normalize_short_ids(v):
     return [str(v)]
 
 
+def normalize_lookup_key(k):
+    return re.sub(r"[^a-z0-9]", "", str(k).lower())
+
+
+def iter_config_dicts(v, max_depth=5):
+    if max_depth < 0:
+        return
+
+    v = parse_json_maybe(v)
+
+    if isinstance(v, dict):
+        yield v
+        for child in v.values():
+            yield from iter_config_dicts(child, max_depth=max_depth - 1)
+    elif isinstance(v, list):
+        for child in v:
+            yield from iter_config_dicts(child, max_depth=max_depth - 1)
+
+
+def pick_from_configs(configs, keys, default=None):
+    wanted = {normalize_lookup_key(k) for k in keys}
+    for cfg in configs:
+        for item in iter_config_dicts(cfg):
+            for k, v in item.items():
+                if normalize_lookup_key(k) in wanted and v not in [None, ""]:
+                    return v
+    return default
+
+
+def safe_cert_filename(name):
+    raw = str(name or "node-unknown").strip()
+    raw = raw.replace("*", "wildcard")
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", raw)
+    safe = re.sub(r"\.+", ".", safe)
+    safe = safe.strip("._-")
+    if not safe:
+        safe = "node-unknown"
+    if safe in [".", ".."]:
+        safe = "node-unknown"
+    return safe[:128]
+
+
+def cert_paths_for_name(name):
+    base = Path(HOST_CERT_DIR).resolve()
+    cert_path = (base / f"{name}.crt").resolve()
+    key_path = (base / f"{name}.key").resolve()
+
+    for path in [cert_path, key_path]:
+        if base != path.parent and base not in path.parents:
+            raise RuntimeError(f"Refusing unsafe certificate path: {path}")
+
+    return cert_path, key_path
+
+
+def normalize_pem_text(value):
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    text = text.replace("\\r\\n", "\n").replace("\\n", "\n")
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    return text + "\n"
+
+
+def is_certificate_pem(text):
+    return (
+        isinstance(text, str)
+        and "-----BEGIN CERTIFICATE-----" in text
+        and "-----END CERTIFICATE-----" in text
+    )
+
+
+def is_private_key_pem(text):
+    return (
+        isinstance(text, str)
+        and re.search(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----", text) is not None
+        and re.search(r"-----END [A-Z0-9 ]*PRIVATE KEY-----", text) is not None
+    )
+
+
+def ensure_cert_dir():
+    Path(HOST_CERT_DIR).mkdir(parents=True, exist_ok=True)
+    os.chmod(HOST_CERT_DIR, 0o755)
+
+
+def write_text_if_changed(path, text, mode=0o644):
+    path = Path(path)
+    old_text = path.read_text(errors="ignore") if path.exists() else None
+    if old_text == text:
+        os.chmod(path, mode)
+        return False
+
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text)
+    os.chmod(tmp, mode)
+    tmp.replace(path)
+    os.chmod(path, mode)
+    return True
+
+
+def copy_file_if_changed(src, dst, mode=0o644):
+    src = Path(src)
+    dst = Path(dst)
+    new_data = src.read_bytes()
+    if dst.exists() and dst.read_bytes() == new_data:
+        os.chmod(dst, mode)
+        return False
+
+    tmp = dst.with_name(f".{dst.name}.tmp")
+    tmp.write_bytes(new_data)
+    os.chmod(tmp, mode)
+    tmp.replace(dst)
+    os.chmod(dst, mode)
+    return True
+
+
+def container_cert_pair(name):
+    return {
+        "certificateFile": f"{CONTAINER_CERT_DIR}/{name}.crt",
+        "keyFile": f"{CONTAINER_CERT_DIR}/{name}.key"
+    }
+
+
+SERVER_NAME_KEYS = [
+    "server_name",
+    "serverName",
+    "sni",
+    "cert_domain",
+    "certDomain",
+    "domain",
+    "host",
+]
+
+CERT_CONTENT_KEYS = [
+    "cert",
+    "crt",
+    "certificate",
+    "public_key",
+    "publicKey",
+    "public",
+    "certificate_content",
+    "certificateContent",
+    "cert_content",
+    "certContent",
+    "tls_certificate",
+    "tlsCertificate",
+]
+
+KEY_CONTENT_KEYS = [
+    "key",
+    "private",
+    "private_key",
+    "privateKey",
+    "private_key_content",
+    "privateKeyContent",
+    "key_content",
+    "keyContent",
+    "tls_key",
+    "tlsKey",
+]
+
+CERT_FILE_KEYS = [
+    "cert_file",
+    "certFile",
+    "certificate_file",
+    "certificateFile",
+    "cert_path",
+    "certPath",
+    "certificate_path",
+    "certificatePath",
+]
+
+KEY_FILE_KEYS = [
+    "key_file",
+    "keyFile",
+    "private_key_file",
+    "privateKeyFile",
+    "key_path",
+    "keyPath",
+    "private_key_path",
+    "privateKeyPath",
+]
+
+
+def resolve_tls_certificate(server, tls_settings, server_name):
+    cert_config = pick(server, "cert_config", "certConfig", default={})
+    cert_config = parse_json_maybe(cert_config)
+    cert_sources = [cert_config, tls_settings, server]
+
+    node_id = pick(server, "id", "node_id", "nodeId", "NodeID", "server_id", "serverId")
+    safe_name = safe_cert_filename(server_name or f"node-{node_id or 'unknown'}")
+    cert_path, key_path = cert_paths_for_name(safe_name)
+
+    ensure_cert_dir()
+
+    cert_file = pick_from_configs(cert_sources, CERT_FILE_KEYS)
+    key_file = pick_from_configs(cert_sources, KEY_FILE_KEYS)
+
+    if cert_file and key_file:
+        cert_file_s = str(cert_file)
+        key_file_s = str(key_file)
+
+        if os.path.exists(cert_file_s) and os.path.exists(key_file_s):
+            cert_changed = copy_file_if_changed(cert_file_s, cert_path)
+            key_changed = copy_file_if_changed(key_file_s, key_path)
+            if cert_changed or key_changed:
+                print(f"[sync] TLS certificate files installed for {safe_name}", flush=True)
+            else:
+                print(f"[sync] TLS certificate files already current for {safe_name}", flush=True)
+            return container_cert_pair(safe_name)
+
+        print(f"[sync] TLS certificate uses panel-provided paths for {safe_name}", flush=True)
+        return {
+            "certificateFile": cert_file_s,
+            "keyFile": key_file_s
+        }
+
+    cert_content = normalize_pem_text(pick_from_configs(cert_sources, CERT_CONTENT_KEYS))
+    key_content = normalize_pem_text(pick_from_configs(cert_sources, KEY_CONTENT_KEYS))
+
+    if cert_content or key_content:
+        if is_certificate_pem(cert_content) and is_private_key_pem(key_content):
+            cert_changed = write_text_if_changed(cert_path, cert_content)
+            key_changed = write_text_if_changed(key_path, key_content)
+            if cert_changed or key_changed:
+                print(f"[sync] TLS certificate content written for {safe_name}", flush=True)
+            else:
+                print(f"[sync] TLS certificate content already current for {safe_name}", flush=True)
+            return container_cert_pair(safe_name)
+
+        print(f"[sync] TLS certificate content from panel is incomplete or invalid for {safe_name}", flush=True)
+
+    if cert_path.exists() and key_path.exists():
+        os.chmod(cert_path, 0o644)
+        os.chmod(key_path, 0o644)
+        print(f"[sync] TLS using existing local certificate fallback for {safe_name}", flush=True)
+        return container_cert_pair(safe_name)
+
+    candidates = []
+
+    if node_id:
+        candidates += glob.glob(f"/etc/xboard-node/instances/*/node-{node_id}/certs/cert.pem")
+
+    candidates += glob.glob("/etc/xboard-node/instances/*/node-*/certs/cert.pem")
+
+    for c in candidates:
+        k = os.path.join(os.path.dirname(c), "key.pem")
+        if os.path.exists(c) and os.path.exists(k):
+            cert_changed = copy_file_if_changed(c, cert_path)
+            key_changed = copy_file_if_changed(k, key_path)
+            if cert_changed or key_changed:
+                print(f"[sync] TLS certificate copied from xboard-node fallback for {safe_name}", flush=True)
+            else:
+                print(f"[sync] TLS xboard-node fallback certificate already current for {safe_name}", flush=True)
+            return container_cert_pair(safe_name)
+
+    print(f"[sync] TLS enabled but no certificate is available for {safe_name}", flush=True)
+    return None
+
+
 def build_stream_settings(server):
     """
     统一处理 Xray streamSettings:
@@ -259,6 +527,9 @@ def build_stream_settings(server):
     short_id = pick(ts, "short_id", "shortId", "short_ids", "shortIds")
     server_name = pick(ts, "server_name", "serverName", "sni")
     reality_port = pick(ts, "server_port", "serverPort", default="443")
+    if not server_name:
+        cert_config = parse_json_maybe(pick(server, "cert_config", "certConfig", default={}))
+        server_name = pick_from_configs([cert_config, server], SERVER_NAME_KEYS)
 
     private_key_is_pem = isinstance(private_key, str) and "BEGIN" in private_key
     if tls_mode == 2 or (private_key and not private_key_is_pem and tls_mode != 1):
@@ -282,125 +553,14 @@ def build_stream_settings(server):
         }
 
     elif tls_mode == 1:
-        import os
-        import glob
-        import shutil
-
-        cert_file = pick(ts, "cert_file", "certFile", "certificateFile")
-        key_file = pick(ts, "key_file", "keyFile")
-
-        cert_content = pick(
-            ts,
-            "cert",
-            "crt",
-            "certificate",
-            "certificate_content",
-            "certificateContent",
-            "cert_content",
-            "certContent",
-            "public_key",
-            "publicKey",
-            "public"
-        )
-
-        key_content = pick(
-            ts,
-            "key",
-            "private",
-            "private_key",
-            "privateKey",
-            "private_key_content",
-            "privateKeyContent",
-            "key_content",
-            "keyContent"
-        )
-
         stream["security"] = "tls"
         tls_settings = {
             "serverName": str(server_name or "")
         }
 
-        host_cert_dir = "/opt/xray/config/certs"
-        container_cert_dir = "/etc/xray/certs"
-        os.makedirs(host_cert_dir, exist_ok=True)
-
-        node_id = pick(server, "id", "node_id", "nodeId", "NodeID", "server_id", "serverId")
-        safe_name = str(server_name or f"node-{node_id or 'unknown'}")
-        safe_name = safe_name.replace("*", "wildcard").replace("/", "_").replace(":", "_")
-
-        def install_cert_pair(src_cert, src_key, name):
-            dst_cert = os.path.join(host_cert_dir, f"{name}.crt")
-            dst_key = os.path.join(host_cert_dir, f"{name}.key")
-
-            shutil.copyfile(src_cert, dst_cert)
-            shutil.copyfile(src_key, dst_key)
-
-            os.chmod(dst_cert, 0o644)
-            os.chmod(dst_key, 0o644)
-
-            return {
-                "certificateFile": f"{container_cert_dir}/{name}.crt",
-                "keyFile": f"{container_cert_dir}/{name}.key"
-            }
-
-        if cert_file and key_file:
-            cert_file_s = str(cert_file)
-            key_file_s = str(key_file)
-
-            if os.path.exists(cert_file_s) and os.path.exists(key_file_s):
-                tls_settings["certificates"] = [
-                    install_cert_pair(cert_file_s, key_file_s, safe_name)
-                ]
-            else:
-                tls_settings["certificates"] = [
-                    {
-                        "certificateFile": cert_file_s,
-                        "keyFile": key_file_s
-                    }
-                ]
-
-        elif cert_content and key_content and "BEGIN" in str(cert_content) and "BEGIN" in str(key_content):
-            dst_cert = os.path.join(host_cert_dir, f"{safe_name}.crt")
-            dst_key = os.path.join(host_cert_dir, f"{safe_name}.key")
-
-            with open(dst_cert, "w") as f:
-                f.write(str(cert_content).strip() + "\n")
-
-            with open(dst_key, "w") as f:
-                f.write(str(key_content).strip() + "\n")
-
-            os.chmod(dst_cert, 0o644)
-            os.chmod(dst_key, 0o644)
-
-            tls_settings["certificates"] = [
-                {
-                    "certificateFile": f"{container_cert_dir}/{safe_name}.crt",
-                    "keyFile": f"{container_cert_dir}/{safe_name}.key"
-                }
-            ]
-
-        else:
-            candidates = []
-
-            if node_id:
-                candidates += glob.glob(f"/etc/xboard-node/instances/*/node-{node_id}/certs/cert.pem")
-
-            candidates += glob.glob("/etc/xboard-node/instances/*/node-*/certs/cert.pem")
-
-            chosen_cert = None
-            chosen_key = None
-
-            for c in candidates:
-                k = os.path.join(os.path.dirname(c), "key.pem")
-                if os.path.exists(c) and os.path.exists(k):
-                    chosen_cert = c
-                    chosen_key = k
-                    break
-
-            if chosen_cert and chosen_key:
-                tls_settings["certificates"] = [
-                    install_cert_pair(chosen_cert, chosen_key, safe_name)
-                ]
+        cert_pair = resolve_tls_certificate(server, ts, server_name)
+        if cert_pair:
+            tls_settings["certificates"] = [cert_pair]
 
         stream["tlsSettings"] = tls_settings
 
