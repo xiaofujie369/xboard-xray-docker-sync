@@ -38,12 +38,17 @@ touch "$XRAY_DIR/logs/access.log" "$XRAY_DIR/logs/error.log"
 chmod 777 "$XRAY_DIR/logs"
 chmod 666 "$XRAY_DIR/logs/access.log" "$XRAY_DIR/logs/error.log"
 
-echo "[4/5] 重新同步配置..."
+echo "[4/6] 更新 systemd 服务..."
+curl -fsSL "${RAW_BASE}/systemd/xboard-sync.service" -o /etc/systemd/system/xboard-sync.service
+curl -fsSL "${RAW_BASE}/systemd/xboard-report.service" -o /etc/systemd/system/xboard-report.service
+systemctl daemon-reload
+systemctl enable xboard-sync xboard-report
+
+echo "[5/6] 重新同步配置..."
 cd "$SYNC_DIR"
 python3 "$SYNC_DIR/xboard_sync.py" once
 
-echo "[5/5] 重启服务..."
-systemctl daemon-reload
+echo "[6/6] 重启服务..."
 systemctl restart xboard-sync
 systemctl restart xboard-report
 
