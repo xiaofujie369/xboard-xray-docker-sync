@@ -189,9 +189,18 @@ show_node_config() {
     protocol,
     decryption: .settings.decryption,
     flow: (.settings.clients[0].flow // null),
-    security: .streamSettings.security,
-    serverName: .streamSettings.tlsSettings.serverName,
-    fingerprint: .streamSettings.tlsSettings.fingerprint,
+    security: (.streamSettings.security // "none"),
+    serverName: (
+      .streamSettings.tlsSettings.serverName //
+      .streamSettings.realitySettings.serverNames[0] //
+      (.streamSettings.realitySettings.dest // "" | split(":")[0]) //
+      null
+    ),
+    realityDest: .streamSettings.realitySettings.dest,
+    fingerprint: (
+      .streamSettings.tlsSettings.fingerprint //
+      .streamSettings.realitySettings.fingerprint
+    ),
     ech: (.streamSettings.tlsSettings.echServerKeys != null),
     certificates: .streamSettings.tlsSettings.certificates,
     clients: (.settings.clients | length)
