@@ -38,6 +38,22 @@ def normalize_node_type(t):
     return aliases.get(t, t)
 
 
+def parse_bool(v, default=False):
+    if v is None or v == "":
+        return default
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+
+    s = str(v).strip().lower()
+    if s in ["1", "true", "yes", "y", "on", "enable", "enabled"]:
+        return True
+    if s in ["0", "false", "no", "n", "off", "disable", "disabled"]:
+        return False
+    return default
+
+
 def get_nodes(env):
     nodes = []
 
@@ -61,6 +77,59 @@ def get_nodes(env):
         raise RuntimeError("NODES cannot be empty; expected node_id:protocol")
 
     return nodes
+
+
+def get_users_list(user_resp):
+    if isinstance(user_resp, dict):
+        if isinstance(user_resp.get("users"), list):
+            return user_resp["users"]
+        if isinstance(user_resp.get("data"), list):
+            return user_resp["data"]
+        if isinstance(user_resp.get("data"), dict):
+            data = user_resp["data"]
+            if isinstance(data.get("users"), list):
+                return data["users"]
+
+    if isinstance(user_resp, list):
+        return user_resp
+
+    return []
+
+
+def first_user_id(user_resp):
+    for user in get_users_list(user_resp):
+        if not isinstance(user, dict):
+            continue
+
+        for key in ["id", "user_id", "uid", "email"]:
+            value = user.get(key)
+            if value in [None, ""]:
+                continue
+            try:
+                return int(value)
+            except Exception:
+                continue
+
+    return None
+
+
+def fetch_first_user_id(env, node_id, node_type):
+    panel = env["PANEL_URL"].rstrip("/")
+    token = env["PANEL_TOKEN"]
+    timeout = int(env.get("REPORT_API_TIMEOUT", "25"))
+
+    url = f"{panel}/api/v1/server/UniProxy/user?node_id={node_id}&node_type={node_type}&token={token}"
+    response = requests.get(url, timeout=timeout)
+
+    try:
+        data = response.json()
+    except Exception:
+        data = response.text[:500]
+
+    if response.status_code >= 400:
+        raise RuntimeError(f"user fetch failed for node {node_id}:{node_type}: HTTP {response.status_code}: {data}")
+
+    return first_user_id(data)
 
 
 def run_statsquery():
@@ -349,6 +418,22 @@ def include_alive_users_in_traffic(scoped_traffic, scoped_alive):
             traffic.setdefault(uid, [0, 0])
 
 
+def ensure_heartbeat_traffic(env, node_id, node_type, traffic):
+    if traffic:
+        return traffic
+
+    if not parse_bool(env.get("REPORT_EMPTY_TRAFFIC_HEARTBEAT", "true"), default=True):
+        return traffic
+
+    uid = fetch_first_user_id(env, node_id, node_type)
+    if uid is None:
+        print(f"[report] node {node_id}:{node_type} heartbeat skipped: no available user")
+        return traffic
+
+    print(f"[report] node {node_id}:{node_type} heartbeat traffic push for user {uid}")
+    return {uid: [0, 0]}
+
+
 def post_traffic(env, node_id, node_type, traffic):
     if not traffic:
         print(f"[report] node {node_id}:{node_type} has no traffic to push")
@@ -407,7 +492,8 @@ def main():
     include_alive_users_in_traffic(scoped_traffic, scoped_alive)
 
     for node_id, node_type in nodes:
-        post_traffic(env, node_id, node_type, scoped_traffic.get(node_id, {}))
+        traffic = ensure_heartbeat_traffic(env, node_id, node_type, scoped_traffic.get(node_id, {}))
+        post_traffic(env, node_id, node_type, traffic)
         post_alive(env, node_id, node_type, scoped_alive.get(node_id, {}))
 
 

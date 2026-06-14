@@ -670,6 +670,49 @@ class ReportTrafficTests(unittest.TestCase):
         post_traffic.assert_called_once_with(env, "3047", "vless", {1485: [0, 0]})
         post_alive.assert_called_once_with(env, "3047", "vless", {1485: ["1.2.3.4"]})
 
+    def test_main_posts_zero_traffic_heartbeat_when_node_has_no_usage(self):
+        env = {
+            "PANEL_URL": "https://panel.example.com",
+            "PANEL_TOKEN": "token",
+            "NODES": "3047:vless",
+        }
+
+        with mock.patch.object(xboard_report, "load_env", return_value=env), \
+             mock.patch.object(xboard_report, "run_statsquery", return_value={"stat": []}), \
+             mock.patch.object(xboard_report, "read_access_log_since", return_value=({}, {})), \
+             mock.patch.object(xboard_report, "fetch_first_user_id", return_value=1485), \
+             mock.patch.object(xboard_report, "post_traffic") as post_traffic, \
+             mock.patch.object(xboard_report, "post_alive") as post_alive, \
+             mock.patch("builtins.print"):
+            xboard_report.main()
+
+        post_traffic.assert_called_once_with(env, "3047", "vless", {1485: [0, 0]})
+        post_alive.assert_called_once_with(env, "3047", "vless", {})
+
+    def test_main_can_disable_zero_traffic_heartbeat(self):
+        env = {
+            "PANEL_URL": "https://panel.example.com",
+            "PANEL_TOKEN": "token",
+            "NODES": "3047:vless",
+            "REPORT_EMPTY_TRAFFIC_HEARTBEAT": "false",
+        }
+
+        with mock.patch.object(xboard_report, "load_env", return_value=env), \
+             mock.patch.object(xboard_report, "run_statsquery", return_value={"stat": []}), \
+             mock.patch.object(xboard_report, "read_access_log_since", return_value=({}, {})), \
+             mock.patch.object(xboard_report, "fetch_first_user_id") as fetch_user, \
+             mock.patch.object(xboard_report, "post_traffic") as post_traffic, \
+             mock.patch.object(xboard_report, "post_alive"):
+            xboard_report.main()
+
+        fetch_user.assert_not_called()
+        post_traffic.assert_called_once_with(env, "3047", "vless", {})
+
+    def test_first_user_id_reads_common_user_response_shapes(self):
+        self.assertEqual(xboard_report.first_user_id({"users": [{"id": "1485"}]}), 1485)
+        self.assertEqual(xboard_report.first_user_id({"data": {"users": [{"user_id": 42}]}}), 42)
+        self.assertIsNone(xboard_report.first_user_id({"users": [{"uuid": "not-an-int"}]}))
+
     def test_post_traffic_skips_empty_payload(self):
         with mock.patch.object(xboard_report.requests, "post") as post, \
              mock.patch("builtins.print"):

@@ -60,13 +60,14 @@ run_remote_script() {
 edit_panel_config() {
   ensure_runtime_dirs
 
-  local old_panel old_token old_nodes old_interval old_backups old_pretest panel token nodes interval backups pretest
+  local old_panel old_token old_nodes old_interval old_backups old_pretest old_report_heartbeat panel token nodes interval backups pretest report_heartbeat
   old_panel="$(get_env_value PANEL_URL)"
   old_token="$(get_env_value PANEL_TOKEN)"
   old_nodes="$(get_env_value NODES)"
   old_interval="$(get_env_value SYNC_INTERVAL)"
   old_backups="$(get_env_value XRAY_CONFIG_BACKUPS)"
   old_pretest="$(get_env_value XRAY_PRESTART_TEST)"
+  old_report_heartbeat="$(get_env_value REPORT_EMPTY_TRAFFIC_HEARTBEAT)"
 
   echo "当前配置:"
   echo "PANEL_URL=${old_panel:-未设置}"
@@ -75,6 +76,7 @@ edit_panel_config() {
   echo "SYNC_INTERVAL=${old_interval:-60}"
   echo "XRAY_CONFIG_BACKUPS=${old_backups:-3}"
   echo "XRAY_PRESTART_TEST=${old_pretest:-true}"
+  echo "REPORT_EMPTY_TRAFFIC_HEARTBEAT=${old_report_heartbeat:-true}"
   echo
 
   read -rp "请输入 XBoard 面板地址 [${old_panel:-https://bs.example.com}]: " panel
@@ -84,6 +86,7 @@ edit_panel_config() {
   read -rp "同步间隔秒数 [${old_interval:-60}]: " interval
   read -rp "保留 config 备份份数 [${old_backups:-3}]: " backups
   read -rp "写入前执行 Xray 配置预检测 true/false [${old_pretest:-true}]: " pretest
+  read -rp "无流量时推送 0 流量心跳 true/false [${old_report_heartbeat:-true}]: " report_heartbeat
 
   panel="${panel:-$old_panel}"
   token="${token:-$old_token}"
@@ -91,6 +94,7 @@ edit_panel_config() {
   interval="${interval:-${old_interval:-60}}"
   backups="${backups:-${old_backups:-3}}"
   pretest="${pretest:-${old_pretest:-true}}"
+  report_heartbeat="${report_heartbeat:-${old_report_heartbeat:-true}}"
 
   if [ -z "$panel" ] || [ -z "$token" ] || [ -z "$nodes" ]; then
     err "PANEL_URL / PANEL_TOKEN / NODES 不能为空"
@@ -109,6 +113,7 @@ XRAY_CONFIG_BACKUPS=$backups
 XRAY_PRESTART_TEST=$pretest
 
 SYNC_INTERVAL=$interval
+REPORT_EMPTY_TRAFFIC_HEARTBEAT=$report_heartbeat
 NODES=$nodes
 EOFENV
   chmod 600 "$ENV_FILE"
