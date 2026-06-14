@@ -165,7 +165,7 @@ This project supports XBoard per-node custom outbounds and custom routes.
 
 You can configure different outbound rules for each node in XBoard.
 
-XBoard route groups selected on a node are also synced. `block`, `direct`, and `proxy` actions are compiled into Xray routing rules bound to that node inbound; `dns` actions are compiled into Xray DNS server rules, with wildcard DNS routes becoming default DNS servers.
+XBoard route groups selected on a node are also synced. `block`, `direct`, and `proxy` actions are compiled into Xray routing rules bound to that node inbound; `dns` actions are compiled into Xray DNS server rules. Dangerous global matchers such as `*`, `0.0.0.0/0`, and `::/0` are ignored in panel route groups by default, and wildcard default DNS routes are ignored unless `XRAY_ENABLE_PANEL_DEFAULT_DNS=true` is set.
 
 Example:
 

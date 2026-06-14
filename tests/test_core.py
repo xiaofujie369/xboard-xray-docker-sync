@@ -434,7 +434,30 @@ class SyncConfigTests(unittest.TestCase):
         self.assertEqual(dns[0]["address"], "223.5.5.5")
         self.assertEqual(dns[0]["domains"], ["geosite:cn", "domain:baidu.com"])
         self.assertEqual(dns[1]["address"], "119.29.29.29")
-        self.assertIn("1.1.1.1", dns)
+        self.assertNotIn("1.1.1.1", dns)
+
+    def test_panel_route_groups_skip_dangerous_global_matchers(self):
+        server = {
+            "routes": [
+                {"match": ["*"], "action": "block"},
+                {"match": ["0.0.0.0/0", "::/0"], "action": "block"},
+                {"match": ["*"], "action": "dns", "action_value": "9.9.9.9"},
+            ]
+        }
+
+        routes, dns = xboard_sync.extract_panel_routes(server, inbound_tag="vless-8443")
+
+        self.assertEqual(routes, [])
+        self.assertEqual(dns, [])
+
+    def test_panel_default_dns_requires_explicit_opt_in(self):
+        route = {"match": ["*"], "action": "dns", "action_value": "9.9.9.9"}
+
+        self.assertEqual(xboard_sync.compile_panel_route(route), ([], []))
+        self.assertEqual(
+            xboard_sync.compile_panel_route(route, allow_default_dns=True),
+            ([], ["9.9.9.9"]),
+        )
 
     def test_xray_config_includes_panel_dns_routes_before_defaults(self):
         dns = [

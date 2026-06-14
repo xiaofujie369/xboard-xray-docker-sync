@@ -934,13 +934,18 @@ def is_ip_matcher(item):
     return False
 
 
+def is_wildcard_matcher(item):
+    item = str(item).strip().lower()
+    return item in ["*", "*.*", "0.0.0.0/0", "::/0"]
+
+
 def normalize_domain_matcher(item):
     item = item.strip()
     if not item:
         return None
 
     lower = item.lower()
-    if lower in ["*", "*.*"]:
+    if is_wildcard_matcher(lower):
         return None
     if lower.startswith(("geosite:", "regexp:", "domain:", "full:", "keyword:")):
         return item
@@ -958,8 +963,13 @@ def normalize_domain_matcher(item):
 def split_route_match(match_items):
     domains = []
     ips = []
+    wildcard = False
 
     for item in ensure_str_list(match_items):
+        if is_wildcard_matcher(item):
+            wildcard = True
+            continue
+
         if is_ip_matcher(item):
             ips.append(item)
             continue
@@ -968,7 +978,7 @@ def split_route_match(match_items):
         if domain:
             domains.append(domain)
 
-    return domains, ips
+    return domains, ips, wildcard
 
 
 def parse_dns_action_value(value):
@@ -987,11 +997,11 @@ def parse_dns_action_value(value):
     return servers
 
 
-def compile_panel_route(route, inbound_tag=None):
+def compile_panel_route(route, inbound_tag=None, allow_default_dns=False):
     if not isinstance(route, dict):
         return [], []
 
-    domains, ips = split_route_match(route.get("match"))
+    domains, ips, wildcard = split_route_match(route.get("match"))
     action = str(route.get("action", "block")).strip().lower()
     action_value = route.get("action_value")
 
@@ -999,13 +1009,15 @@ def compile_panel_route(route, inbound_tag=None):
     dns_servers = []
 
     if action == "dns":
+        if not domains and not allow_default_dns:
+            return [], []
         for address in parse_dns_action_value(action_value):
             if domains:
                 dns_servers.append({
                     "address": address,
                     "domains": domains
                 })
-            else:
+            elif wildcard:
                 dns_servers.append(address)
         return [], dns_servers
 
@@ -1038,7 +1050,7 @@ def compile_panel_route(route, inbound_tag=None):
     return routing_rules, []
 
 
-def extract_panel_routes(server, inbound_tag=None):
+def extract_panel_routes(server, inbound_tag=None, include_dns=True, allow_default_dns=False):
     if not isinstance(server, dict):
         return [], []
 
@@ -1048,9 +1060,14 @@ def extract_panel_routes(server, inbound_tag=None):
     for key in ["routes", "route_rules", "routeRules"]:
         items = ensure_list(server.get(key))
         for item in items:
-            rules, dns = compile_panel_route(item, inbound_tag=inbound_tag)
+            rules, dns = compile_panel_route(
+                item,
+                inbound_tag=inbound_tag,
+                allow_default_dns=allow_default_dns
+            )
             routing_rules.extend(rules)
-            dns_servers.extend(dns)
+            if include_dns:
+                dns_servers.extend(dns)
 
     return routing_rules, dns_servers
 
@@ -1693,7 +1710,15 @@ def restart_xray(container):
     ensure_container_running(container)
 
 
-def fetch_node(panel, token, node_id, node_type):
+def fetch_node(
+    panel,
+    token,
+    node_id,
+    node_type,
+    enable_panel_routes=True,
+    enable_panel_dns_routes=True,
+    enable_panel_default_dns=False,
+):
     node_type = normalize_node_type(node_type)
 
     config_url = f"{panel}/api/v1/server/UniProxy/config?node_id={node_id}&node_type={node_type}&token={token}"
@@ -1723,10 +1748,15 @@ def fetch_node(panel, token, node_id, node_type):
         server,
         inbound_tag=inbound.get("tag")
     )
-    panel_routes, panel_dns_servers = extract_panel_routes(
-        server,
-        inbound_tag=inbound.get("tag")
-    )
+    panel_routes = []
+    panel_dns_servers = []
+    if enable_panel_routes:
+        panel_routes, panel_dns_servers = extract_panel_routes(
+            server,
+            inbound_tag=inbound.get("tag"),
+            include_dns=enable_panel_dns_routes,
+            allow_default_dns=enable_panel_default_dns,
+        )
     custom_routes.extend(panel_routes)
 
     if custom_outbounds:
@@ -1758,6 +1788,9 @@ def sync_once():
     container = env.get("XRAY_CONTAINER", "xray-core")
     container_config_dir = env.get("XRAY_CONTAINER_CONFIG_DIR", "/etc/xray")
     prestart_test = parse_bool(env.get("XRAY_PRESTART_TEST", "true"), default=True)
+    enable_panel_routes = parse_bool(env.get("XRAY_ENABLE_PANEL_ROUTES", "true"), default=True)
+    enable_panel_dns_routes = parse_bool(env.get("XRAY_ENABLE_PANEL_DNS_ROUTES", "true"), default=True)
+    enable_panel_default_dns = parse_bool(env.get("XRAY_ENABLE_PANEL_DEFAULT_DNS", "false"), default=False)
     backup_keep = int(env.get("XRAY_CONFIG_BACKUPS", "3"))
     ensure_xray_log_files(env.get("XRAY_LOG_DIR", "/opt/xray/logs"))
 
@@ -1767,7 +1800,15 @@ def sync_once():
     custom_dns_servers = []
 
     for node_id, node_type in nodes:
-        node_data = fetch_node(panel, token, node_id, node_type)
+        node_data = fetch_node(
+            panel,
+            token,
+            node_id,
+            node_type,
+            enable_panel_routes=enable_panel_routes,
+            enable_panel_dns_routes=enable_panel_dns_routes,
+            enable_panel_default_dns=enable_panel_default_dns,
+        )
         inbound = node_data["inbound"]
 
         inbounds.append(inbound)
