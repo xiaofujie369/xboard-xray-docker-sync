@@ -507,6 +507,22 @@ class SyncConfigTests(unittest.TestCase):
 
         self.assertEqual(routes, [])
 
+    def test_custom_route_to_missing_outbound_is_ignored(self):
+        routes = xboard_sync.extract_custom_routes(
+            {
+                "custom_routes": [
+                    {
+                        "type": "field",
+                        "outboundTag": "ss-us",
+                    }
+                ]
+            },
+            inbound_tag="shadowsocks-8333",
+            outbound_tag_map={},
+        )
+
+        self.assertEqual(routes, [])
+
     def test_panel_proxy_route_rewrites_local_custom_outbound_tag(self):
         routes, _dns = xboard_sync.extract_panel_routes(
             {
@@ -523,6 +539,24 @@ class SyncConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(routes[0]["outboundTag"], "node-266-ss-us")
+
+    def test_panel_proxy_route_to_missing_outbound_is_ignored(self):
+        routes, dns = xboard_sync.extract_panel_routes(
+            {
+                "routes": [
+                    {
+                        "match": [".example.com"],
+                        "action": "proxy",
+                        "action_value": "ss-us",
+                    }
+                ]
+            },
+            inbound_tag="shadowsocks-8333",
+            outbound_tag_map={},
+        )
+
+        self.assertEqual(routes, [])
+        self.assertEqual(dns, [])
 
     def test_xray_config_includes_panel_dns_routes_before_defaults(self):
         dns = [

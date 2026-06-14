@@ -972,6 +972,14 @@ def route_applies_to_inbound(route, inbound_tag):
     return inbound_tag in as_string_list(route.get("inboundTag"))
 
 
+def allowed_outbound_tags(outbound_tag_map=None):
+    return {"direct", "block"} | set((outbound_tag_map or {}).values())
+
+
+def is_allowed_outbound_tag(tag, outbound_tag_map=None):
+    return tag in allowed_outbound_tags(outbound_tag_map)
+
+
 def rewrite_route_for_node(route, inbound_tag=None, outbound_tag_map=None):
     if not isinstance(route, dict):
         return None
@@ -988,6 +996,9 @@ def rewrite_route_for_node(route, inbound_tag=None, outbound_tag_map=None):
     outbound = rr.get("outboundTag")
     if outbound in outbound_tag_map:
         rr["outboundTag"] = outbound_tag_map[outbound]
+
+    if not is_allowed_outbound_tag(rr.get("outboundTag"), outbound_tag_map):
+        return None
 
     return rr
 
@@ -1092,8 +1103,12 @@ def compile_panel_route(route, inbound_tag=None, allow_default_dns=False, outbou
     if action == "direct":
         outbound = "direct"
     elif action == "proxy":
-        outbound = str(action_value).strip() if action_value not in [None, ""] else "direct"
+        if action_value in [None, ""]:
+            return [], []
+        outbound = str(action_value).strip()
         outbound = (outbound_tag_map or {}).get(outbound, outbound)
+        if not is_allowed_outbound_tag(outbound, outbound_tag_map):
+            return [], []
     else:
         outbound = "block"
 
