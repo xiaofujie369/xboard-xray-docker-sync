@@ -569,7 +569,6 @@ def add_common_tls_options(dst, server, tls_settings):
     if fp:
         dst["fingerprint"] = fp
 
-    add_bool_if_true(dst, "allowInsecure", pick(tls_settings, "allow_insecure", "allowInsecure", default=None))
     add_bool_if_true(dst, "rejectUnknownSni", pick(tls_settings, "reject_unknown_sni", "rejectUnknownSni", default=None))
     add_bool_if_true(dst, "disableSystemRoot", pick(tls_settings, "disable_system_root", "disableSystemRoot", default=None))
     add_bool_if_true(

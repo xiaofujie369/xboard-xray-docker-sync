@@ -169,6 +169,7 @@ class SyncConfigTests(unittest.TestCase):
                 "tls_settings": {
                     "server_name": "link.shy521.com",
                     "allow_insecure": True,
+                    "pinnedPeerCertSha256": "abc123",
                     "alpn": "h2,http/1.1",
                     "ech": {
                         "enabled": True,
@@ -186,7 +187,8 @@ class SyncConfigTests(unittest.TestCase):
             tls = stream["tlsSettings"]
 
             self.assertEqual(tls["fingerprint"], "edge")
-            self.assertTrue(tls["allowInsecure"])
+            self.assertNotIn("allowInsecure", tls)
+            self.assertEqual(tls["pinnedPeerCertSha256"], "abc123")
             self.assertEqual(tls["alpn"], ["h2", "http/1.1"])
             self.assertEqual(tls["echServerKeys"], TEST_ECH_KEY)
             self.assertEqual(tls["echConfigList"], "YWJjZGVm")
