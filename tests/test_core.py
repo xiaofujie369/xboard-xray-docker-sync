@@ -404,6 +404,22 @@ class SyncConfigTests(unittest.TestCase):
         self.assertTrue(config["policy"]["levels"]["0"]["statsUserUplink"])
         self.assertTrue(config["policy"]["levels"]["0"]["statsUserDownlink"])
 
+    def test_custom_outbounds_do_not_become_default_outbound(self):
+        config = xboard_sync.build_xray_config(
+            [],
+            custom_outbounds=[
+                {
+                    "tag": "node-1159-relay-vless-reality",
+                    "protocol": "vless",
+                    "settings": {"vnext": []},
+                }
+            ],
+        )
+
+        self.assertEqual(config["outbounds"][0]["tag"], "direct")
+        self.assertEqual(config["outbounds"][1]["tag"], "block")
+        self.assertEqual(config["outbounds"][2]["tag"], "node-1159-relay-vless-reality")
+
     def test_panel_route_groups_compile_to_routing_and_dns(self):
         server = {
             "routes": [

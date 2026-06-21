@@ -1593,7 +1593,7 @@ def build_xray_config(inbounds, custom_outbounds=None, custom_routes=None, custo
     dns_servers = dedupe_dns_servers(custom_dns_servers + ["1.1.1.1", "8.8.8.8"])
 
     outbounds = dedupe_outbounds(
-        custom_outbounds + [
+        [
             {
                 "tag": "direct",
                 "protocol": "freedom",
@@ -1604,7 +1604,7 @@ def build_xray_config(inbounds, custom_outbounds=None, custom_routes=None, custo
                 "protocol": "blackhole",
                 "settings": {}
             }
-        ]
+        ] + custom_outbounds
     )
 
     routing_rules = [
