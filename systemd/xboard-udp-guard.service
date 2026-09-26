@@ -1,0 +1,15 @@
+[Unit]
+Description=Per-user UDP abuse guard for official Xray-core
+After=network-online.target docker.service xboard-sync.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/xray-sync
+ExecStart=/usr/bin/python3 /opt/xray-sync/udp_guard.py run
+Restart=always
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

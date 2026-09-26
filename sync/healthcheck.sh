@@ -46,6 +46,15 @@ echo "===== xboard-report Logs ====="
 journalctl -u xboard-report -n 30 --no-pager || true
 
 echo
+echo "===== UDP Guard ====="
+systemctl status xboard-udp-guard --no-pager || true
+python3 /opt/xray-sync/udp_guard.py status 2>/dev/null || true
+
+echo
+echo "===== UDP Guard Logs ====="
+journalctl -u xboard-udp-guard -n 30 --no-pager || true
+
+echo
 echo "===== Xray Access Log ====="
 ls -ld /opt/xray/logs 2>/dev/null || true
 ls -lh /opt/xray/logs/access.log 2>/dev/null || true
