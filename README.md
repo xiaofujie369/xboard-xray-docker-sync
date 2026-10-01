@@ -12,7 +12,6 @@ This project does not use Xboard-Node, V2bX, or XrayR. It uses official xray-cor
 - XBoard traffic report
 - Multi-node support
 - Multi-protocol support
-- Per-user UDP risk scoring and temporary blocking
 - systemd auto start
 - Restart on failure after 60 seconds
 - Health check script
@@ -91,15 +90,12 @@ NODES=3047:vless,8881:shadowsocks,8882:trojan,8883:vmess
 /opt/xray-sync/report_state.json
 /opt/xray-sync/xboard_sync.py
 /opt/xray-sync/xboard_report.py
-/opt/xray-sync/udp_guard.py
-/opt/xray-sync/udp_guard_state.json
 /opt/xray-sync/healthcheck.sh
 
 ## Services
 
 systemctl status xboard-sync --no-pager
 systemctl status xboard-report --no-pager
-systemctl status xboard-udp-guard --no-pager
 
 ## Management Menu
 
@@ -121,7 +117,6 @@ Menu features:
 - Check TLS certificate files and openssl output
 - Open generated node ports in ufw
 - Backup and restore config.json
-- Inspect and configure per-user UDP protection
 
 ## Health Check
 
@@ -139,60 +134,6 @@ If online users or traffic are not visible, run:
 
 /opt/xray-sync/healthcheck.sh
 journalctl -u xboard-report -n 100 --no-pager
-
-## Per-user UDP Guard
-
-`xboard-udp-guard` reads newly appended Xray access-log entries and counts
-accepted UDP sessions by the scoped Xray email `node_id:user_id`. The rolling
-window approximates active UDP mappings without treating the node-wide
-conntrack count as a single user's usage.
-
-Safe defaults:
-
-- mode: `observe` (alerts only; never changes user traffic)
-- rolling window: 120 seconds
-- soft limit: 256 UDP session events per user
-- hard limit: 512 UDP session events per user
-- temporary block: 600 seconds
-- Xray idle connection timeout: 120 seconds
-
-The first service start begins at the end of the current access log, so old
-log entries cannot trigger a block after an install or update. State is kept in
-`/opt/xray-sync/udp_guard_state.json` with mode `0600`. Xray log files are
-owned by the official container UID/GID `65532:65532`, with directory mode
-`0750` and file mode `0640`, so an unprivileged local process cannot inject
-fake events into the guard.
-
-View current risk scores and conntrack pressure:
-
-```bash
-python3 /opt/xray-sync/udp_guard.py status
-```
-
-Keep observation mode for at least one normal traffic period. After checking
-the results, enable automatic temporary blocking through menu item 18 in
-`xbr`, or set the following value in `/opt/xray-sync/.env` and restart the
-service:
-
-```bash
-UDP_GUARD_MODE=block
-systemctl restart xboard-udp-guard
-python3 /opt/xray-sync/xboard_sync.py once
-```
-
-Manual emergency operations use the same scoped user identifier:
-
-```bash
-python3 /opt/xray-sync/udp_guard.py block 3047:1485 --seconds 600
-python3 /opt/xray-sync/udp_guard.py unblock 3047:1485
-```
-
-Temporary blocks are generated as Xray routing rules matching both the user
-and `network: udp`; TCP remains available. Xray has no native per-user UDP
-concurrency setting, so the guard limits recent accepted UDP sessions rather
-than claiming an exact kernel-level concurrent count. Node-wide conntrack
-usage is displayed for capacity alerts (warning at 70%, critical at 85%) but
-is not used to attribute traffic to a user.
 
 ## Update
 

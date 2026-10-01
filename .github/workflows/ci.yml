@@ -23,7 +23,7 @@ jobs:
         run: python -m pip install --upgrade pip requests
 
       - name: Compile Python scripts
-        run: python -m py_compile sync/xboard_sync.py sync/xboard_report.py sync/udp_guard.py
+        run: python -m py_compile sync/xboard_sync.py sync/xboard_report.py
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v

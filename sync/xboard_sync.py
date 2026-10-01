@@ -17,8 +17,6 @@ import requests
 ENV_PATH = "/opt/xray-sync/.env"
 HOST_CERT_DIR = "/opt/xray/config/certs"
 CONTAINER_CERT_DIR = "/etc/xray/certs"
-DEFAULT_UDP_GUARD_STATE = "/opt/xray-sync/udp_guard_state.json"
-UDP_GUARD_USER_RE = re.compile(r"^[0-9]+(?::[0-9]+)?$")
 
 
 def load_env():
@@ -1588,65 +1586,10 @@ def build_shadowsocks_inbound(config_resp, user_resp, node_id=None):
     }
 
 
-def build_udp_guard_routes(env, now=None):
-    mode = str(env.get("UDP_GUARD_MODE", "observe")).strip().lower()
-    enabled = parse_bool(env.get("UDP_GUARD_ENABLED", "true"), default=True)
-    if not enabled or mode != "block":
-        return []
-
-    state_path = Path(env.get("UDP_GUARD_STATE", DEFAULT_UDP_GUARD_STATE))
-    if not state_path.exists():
-        return []
-    try:
-        if state_path.stat().st_size > 50 * 1024 * 1024:
-            raise RuntimeError("state file exceeds 50 MiB")
-        state = json.loads(state_path.read_text(errors="ignore"))
-    except Exception as e:
-        print(f"[sync] WARN: 无法读取 UDP Guard 状态: {e}", file=sys.stderr, flush=True)
-        return []
-
-    blocked = state.get("blocked_users") if isinstance(state, dict) else None
-    if not isinstance(blocked, dict):
-        return []
-
-    now = time.time() if now is None else float(now)
-    users = []
-    for user, item in blocked.items():
-        if not UDP_GUARD_USER_RE.fullmatch(str(user)) or not isinstance(item, dict):
-            continue
-        try:
-            expires_at = float(item.get("expires_at", 0))
-        except (TypeError, ValueError):
-            continue
-        if expires_at > now:
-            users.append(str(user))
-
-    if not users:
-        return []
-
-    return [
-        {
-            "type": "field",
-            "user": sorted(set(users)),
-            "network": "udp",
-            "outboundTag": "block",
-            "ruleTag": "udp-guard-temporary-block",
-        }
-    ]
-
-
-def build_xray_config(
-    inbounds,
-    custom_outbounds=None,
-    custom_routes=None,
-    custom_dns_servers=None,
-    udp_guard_routes=None,
-    conn_idle_seconds=120,
-):
+def build_xray_config(inbounds, custom_outbounds=None, custom_routes=None, custom_dns_servers=None):
     custom_outbounds = custom_outbounds or []
     custom_routes = custom_routes or []
     custom_dns_servers = custom_dns_servers or []
-    udp_guard_routes = udp_guard_routes or []
     dns_servers = dedupe_dns_servers(custom_dns_servers + ["1.1.1.1", "8.8.8.8"])
 
     outbounds = dedupe_outbounds(
@@ -1671,8 +1614,7 @@ def build_xray_config(
                 "api"
             ],
             "outboundTag": "api"
-        }
-    ] + udp_guard_routes + [
+        },
         {
             "type": "field",
             "ip": [
@@ -1705,10 +1647,8 @@ def build_xray_config(
         "policy": {
             "levels": {
                 "0": {
-                    "connIdle": int(conn_idle_seconds),
                     "statsUserUplink": True,
-                    "statsUserDownlink": True,
-                    "statsUserOnline": True
+                    "statsUserDownlink": True
                 }
             },
             "system": {
@@ -1754,17 +1694,9 @@ def ensure_xray_log_files(log_dir="/opt/xray/logs"):
     access_log.touch(exist_ok=True)
     error_log.touch(exist_ok=True)
 
-    try:
-        os.chown(p, 65532, 65532)
-        os.chown(access_log, 65532, 65532)
-        os.chown(error_log, 65532, 65532)
-    except (AttributeError, OSError):
-        # Windows unit tests and non-root diagnostic runs cannot chown.
-        pass
-
-    p.chmod(0o750)
-    access_log.chmod(0o640)
-    error_log.chmod(0o640)
+    p.chmod(0o777)
+    access_log.chmod(0o666)
+    error_log.chmod(0o666)
 
 
 def validate_xray_config(config):
@@ -1955,7 +1887,9 @@ def fetch_node(
         "custom_dns_servers": panel_dns_servers
     }
 
-def _sync_once(env):
+def sync_once():
+    env = load_env()
+
     panel = env["PANEL_URL"].rstrip("/")
     token = env["PANEL_TOKEN"]
     nodes = get_nodes(env)
@@ -1968,9 +1902,6 @@ def _sync_once(env):
     enable_panel_dns_routes = parse_bool(env.get("XRAY_ENABLE_PANEL_DNS_ROUTES", "true"), default=True)
     enable_panel_default_dns = parse_bool(env.get("XRAY_ENABLE_PANEL_DEFAULT_DNS", "false"), default=False)
     backup_keep = int(env.get("XRAY_CONFIG_BACKUPS", "3"))
-    conn_idle_seconds = int(env.get("XRAY_CONN_IDLE_SECONDS", "120"))
-    if conn_idle_seconds < 30 or conn_idle_seconds > 3600:
-        raise RuntimeError("XRAY_CONN_IDLE_SECONDS 必须在 30 到 3600 秒之间")
     ensure_xray_log_files(env.get("XRAY_LOG_DIR", "/opt/xray/logs"))
 
     inbounds = []
@@ -2007,9 +1938,7 @@ def _sync_once(env):
         inbounds,
         custom_outbounds=custom_outbounds,
         custom_routes=custom_routes,
-        custom_dns_servers=custom_dns_servers,
-        udp_guard_routes=build_udp_guard_routes(env),
-        conn_idle_seconds=conn_idle_seconds,
+        custom_dns_servers=custom_dns_servers
     )
 
     new_text = json.dumps(xray_config, ensure_ascii=False, indent=2)
@@ -2036,30 +1965,6 @@ def _sync_once(env):
     else:
         ensure_container_running(container, retries=1, delay=0)
         print("[sync] 配置无变化，xray-core 正在运行", flush=True)
-
-
-def acquire_sync_lock(path):
-    """Serialize config writers on Linux; unit tests on other systems skip it."""
-    try:
-        import fcntl
-    except ImportError:
-        return None
-
-    lock_path = Path(path)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = lock_path.open("a+")
-    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-    return handle
-
-
-def sync_once():
-    env = load_env()
-    lock = acquire_sync_lock(env.get("XRAY_SYNC_LOCK", "/run/lock/xboard-sync.lock"))
-    try:
-        return _sync_once(env)
-    finally:
-        if lock is not None:
-            lock.close()
 
 
 def loop():

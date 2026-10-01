@@ -58,9 +58,8 @@ sysctl --system >/dev/null || true
 echo "[4/9] 创建目录..."
 mkdir -p "$XRAY_DIR/config" "$XRAY_DIR/logs" "$SYNC_DIR"
 touch "$XRAY_DIR/logs/access.log" "$XRAY_DIR/logs/error.log"
-chown -R 65532:65532 "$XRAY_DIR/logs"
-chmod 750 "$XRAY_DIR/logs"
-chmod 640 "$XRAY_DIR/logs/access.log" "$XRAY_DIR/logs/error.log"
+chmod 777 "$XRAY_DIR/logs"
+chmod 666 "$XRAY_DIR/logs/access.log" "$XRAY_DIR/logs/error.log"
 
 echo "[5/9] 写入 Xray docker-compose.yml..."
 cat > "$XRAY_DIR/docker-compose.yml" <<'EOC'
@@ -96,12 +95,11 @@ EOC
 echo "[7/9] 下载同步脚本..."
 curl -fsSL "${RAW_BASE}/sync/xboard_sync.py" -o "$SYNC_DIR/xboard_sync.py"
 curl -fsSL "${RAW_BASE}/sync/xboard_report.py" -o "$SYNC_DIR/xboard_report.py"
-curl -fsSL "${RAW_BASE}/sync/udp_guard.py" -o "$SYNC_DIR/udp_guard.py"
 curl -fsSL "${RAW_BASE}/sync/healthcheck.sh" -o "$SYNC_DIR/healthcheck.sh"
 curl -fsSL "${RAW_BASE}/sync/manage.sh" -o "$SYNC_DIR/manage.sh"
 cp "$SYNC_DIR/manage.sh" /usr/local/bin/xray-sync
 cp "$SYNC_DIR/manage.sh" /usr/local/bin/xbr
-chmod +x "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/udp_guard.py" "$SYNC_DIR/healthcheck.sh" "$SYNC_DIR/manage.sh" /usr/local/bin/xray-sync /usr/local/bin/xbr
+chmod +x "$SYNC_DIR/xboard_sync.py" "$SYNC_DIR/xboard_report.py" "$SYNC_DIR/healthcheck.sh" "$SYNC_DIR/manage.sh" /usr/local/bin/xray-sync /usr/local/bin/xbr
 
 cat > "$SYNC_DIR/.env" <<EOFENV
 PANEL_URL=$PANEL_URL
@@ -113,7 +111,6 @@ XRAY_CONTAINER_CONFIG_DIR=/etc/xray
 XRAY_LOG_DIR=/opt/xray/logs
 XRAY_CONFIG_BACKUPS=3
 XRAY_PRESTART_TEST=true
-XRAY_CONN_IDLE_SECONDS=120
 XRAY_ENABLE_PANEL_ROUTES=true
 XRAY_ENABLE_PANEL_DNS_ROUTES=true
 XRAY_ENABLE_PANEL_DEFAULT_DNS=false
@@ -123,19 +120,6 @@ REPORT_USE_V2_REPORT=true
 REPORT_V2_FALLBACK=true
 REPORT_KERNEL_STATUS=true
 REPORT_ONLINE_TTL=180
-
-# observe 仅告警；确认无误后改成 block 才会自动临时阻断单用户 UDP
-UDP_GUARD_MODE=observe
-UDP_GUARD_SOFT_LIMIT=256
-UDP_GUARD_HARD_LIMIT=512
-UDP_GUARD_WINDOW_SECONDS=120
-UDP_GUARD_BLOCK_SECONDS=600
-UDP_GUARD_POLL_SECONDS=1
-UDP_GUARD_ALERT_COOLDOWN=60
-UDP_GUARD_SYNC_MIN_INTERVAL=30
-UDP_GUARD_STATE=/opt/xray-sync/udp_guard_state.json
-UDP_GUARD_ACCESS_LOG=/opt/xray/logs/access.log
-UDP_GUARD_READ_EXISTING=false
 NODES=$NODES
 EOFENV
 
@@ -144,10 +128,9 @@ chmod 600 "$SYNC_DIR/.env"
 echo "[8/9] 写入 systemd 服务..."
 curl -fsSL "${RAW_BASE}/systemd/xboard-sync.service" -o /etc/systemd/system/xboard-sync.service
 curl -fsSL "${RAW_BASE}/systemd/xboard-report.service" -o /etc/systemd/system/xboard-report.service
-curl -fsSL "${RAW_BASE}/systemd/xboard-udp-guard.service" -o /etc/systemd/system/xboard-udp-guard.service
 
 systemctl daemon-reload
-systemctl enable xboard-sync xboard-report xboard-udp-guard
+systemctl enable xboard-sync xboard-report
 
 echo "[9/9] 启动 Xray 并执行首次同步..."
 cd "$XRAY_DIR"
@@ -159,7 +142,6 @@ python3 "$SYNC_DIR/xboard_sync.py" once
 
 systemctl restart xboard-sync
 systemctl restart xboard-report
-systemctl restart xboard-udp-guard
 
 echo
 echo "========================================"
@@ -170,8 +152,6 @@ echo "查看状态:"
 echo "  docker ps -a | grep xray"
 echo "  systemctl status xboard-sync --no-pager"
 echo "  systemctl status xboard-report --no-pager"
-echo "  systemctl status xboard-udp-guard --no-pager"
-echo "  python3 /opt/xray-sync/udp_guard.py status"
 echo "  /opt/xray-sync/healthcheck.sh"
 echo "  xbr"
 echo "  xray-sync"

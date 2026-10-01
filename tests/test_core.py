@@ -1,7 +1,5 @@
 import importlib.util
 import json
-import os
-import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,7 +18,6 @@ def load_module(name, relative_path):
 
 xboard_sync = load_module("xboard_sync", "sync/xboard_sync.py")
 xboard_report = load_module("xboard_report", "sync/xboard_report.py")
-udp_guard = load_module("udp_guard", "sync/udp_guard.py")
 
 TEST_CERT = """-----BEGIN CERTIFICATE-----
 MIIBtestcert
@@ -406,37 +403,6 @@ class SyncConfigTests(unittest.TestCase):
         self.assertEqual(config["log"]["error"], "/var/log/xray/error.log")
         self.assertTrue(config["policy"]["levels"]["0"]["statsUserUplink"])
         self.assertTrue(config["policy"]["levels"]["0"]["statsUserDownlink"])
-        self.assertTrue(config["policy"]["levels"]["0"]["statsUserOnline"])
-        self.assertEqual(config["policy"]["levels"]["0"]["connIdle"], 120)
-
-    def test_udp_guard_routes_only_include_unexpired_valid_users(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            state_path = Path(tmp) / "udp-guard.json"
-            state_path.write_text(json.dumps({
-                "blocked_users": {
-                    "3047:1485": {"expires_at": 200},
-                    "3047:42": {"expires_at": 90},
-                    "bad-user": {"expires_at": 200},
-                }
-            }))
-            env = {
-                "UDP_GUARD_MODE": "block",
-                "UDP_GUARD_STATE": str(state_path),
-            }
-
-            routes = xboard_sync.build_udp_guard_routes(env, now=100)
-            config = xboard_sync.build_xray_config([], udp_guard_routes=routes)
-
-        self.assertEqual(routes[0]["user"], ["3047:1485"])
-        self.assertEqual(routes[0]["network"], "udp")
-        self.assertEqual(routes[0]["outboundTag"], "block")
-        self.assertEqual(config["routing"]["rules"][1], routes[0])
-
-    def test_udp_guard_routes_are_disabled_in_observe_mode(self):
-        self.assertEqual(
-            xboard_sync.build_udp_guard_routes({"UDP_GUARD_MODE": "observe"}, now=100),
-            [],
-        )
 
     def test_custom_outbounds_do_not_become_default_outbound(self):
         config = xboard_sync.build_xray_config(
@@ -816,161 +782,8 @@ class SyncConfigTests(unittest.TestCase):
 
             self.assertTrue(access_log.exists())
             self.assertTrue(error_log.exists())
-            if os.name != "nt":
-                self.assertEqual(stat.S_IMODE(Path(tmp).stat().st_mode), 0o750)
-                self.assertEqual(stat.S_IMODE(access_log.stat().st_mode), 0o640)
-                self.assertEqual(stat.S_IMODE(error_log.stat().st_mode), 0o640)
             access_log.write_text("ok\n")
             error_log.write_text("ok\n")
-
-
-class UdpGuardTests(unittest.TestCase):
-    def config(self, **overrides):
-        env = {
-            "UDP_GUARD_MODE": "observe",
-            "UDP_GUARD_SOFT_LIMIT": "3",
-            "UDP_GUARD_HARD_LIMIT": "4",
-            "UDP_GUARD_WINDOW_SECONDS": "120",
-            "UDP_GUARD_BLOCK_SECONDS": "60",
-        }
-        env.update(overrides)
-        return udp_guard.build_config(env)
-
-    def test_extract_udp_user_accepts_only_udp_and_scoped_numeric_users(self):
-        self.assertEqual(
-            udp_guard.extract_udp_user(
-                "2026/09/26 10:00:00 1.2.3.4:5000 accepted udp:example.com:443 email: 3047:1485"
-            ),
-            "3047:1485",
-        )
-        self.assertEqual(
-            udp_guard.extract_udp_user(
-                "2026/09/26 10:00:00 1.2.3.4:5000 accepted UDP:8.8.8.8:53 [99]"
-            ),
-            "99",
-        )
-        self.assertIsNone(
-            udp_guard.extract_udp_user(
-                "2026/09/26 10:00:00 1.2.3.4:5000 accepted tcp:example.com:443 email: 3047:1485"
-            )
-        )
-        self.assertIsNone(
-            udp_guard.extract_udp_user(
-                "accepted udp:example.com:443 email: ../../config.json"
-            )
-        )
-        self.assertEqual(
-            udp_guard.extract_udp_user(
-                "accepted udp:email:3047 [direct] email: 8881:42"
-            ),
-            "8881:42",
-        )
-
-    def test_risk_score_matches_default_threshold_bands(self):
-        self.assertEqual(udp_guard.risk_score(0), 0)
-        self.assertEqual(udp_guard.risk_score(128), 25)
-        self.assertEqual(udp_guard.risk_score(256), 50)
-        self.assertEqual(udp_guard.risk_score(512), 75)
-        self.assertEqual(udp_guard.risk_score(1024), 90)
-        self.assertEqual(udp_guard.risk_score(2052), 100)
-
-    def test_observe_mode_alerts_but_does_not_block(self):
-        state = udp_guard.empty_state()
-        config = self.config()
-
-        with mock.patch("builtins.print"):
-            routing_changed, state_changed = udp_guard.process_udp_users(
-                state,
-                ["3047:1485"] * 6,
-                config,
-                now=1000,
-            )
-
-        self.assertFalse(routing_changed)
-        self.assertTrue(state_changed)
-        self.assertEqual(state["blocked_users"], {})
-        self.assertEqual(len(state["events"]["3047:1485"]), 6)
-
-    def test_block_mode_blocks_then_expires_after_window_is_quiet(self):
-        state = udp_guard.empty_state()
-        config = self.config(UDP_GUARD_MODE="block")
-
-        with mock.patch("builtins.print"):
-            routing_changed, _ = udp_guard.process_udp_users(
-                state,
-                ["3047:1485"] * 4,
-                config,
-                now=1000,
-            )
-        self.assertTrue(routing_changed)
-        self.assertEqual(state["blocked_users"]["3047:1485"]["expires_at"], 1060)
-
-        with mock.patch("builtins.print"):
-            routing_changed, _ = udp_guard.process_udp_users(state, [], config, now=1061)
-        self.assertFalse(routing_changed)
-        self.assertGreater(state["blocked_users"]["3047:1485"]["expires_at"], 1061)
-
-        with mock.patch("builtins.print"):
-            routing_changed, _ = udp_guard.process_udp_users(state, [], config, now=1122)
-        self.assertTrue(routing_changed)
-        self.assertEqual(state["blocked_users"], {})
-
-    def test_switching_to_observe_removes_existing_blocks(self):
-        state = udp_guard.empty_state()
-        state["mode"] = "block"
-        state["blocked_users"] = {
-            "3047:1485": {"expires_at": 2000, "blocked_at": 1000}
-        }
-
-        routing_changed, _ = udp_guard.process_udp_users(
-            state,
-            [],
-            self.config(),
-            now=1100,
-        )
-
-        self.assertTrue(routing_changed)
-        self.assertEqual(state["blocked_users"], {})
-
-    def test_first_start_skips_history_and_then_reads_appends(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            log_path = Path(tmp) / "access.log"
-            log_path.write_text("old accepted udp:x:1 email: 3047:1\n")
-            state = udp_guard.empty_state()
-            config = self.config(UDP_GUARD_ACCESS_LOG=str(log_path))
-
-            lines, changed = udp_guard.read_new_log_lines(state, config)
-            self.assertTrue(changed)
-            self.assertEqual(lines, [])
-
-            with log_path.open("a") as handle:
-                handle.write("new accepted udp:x:1 email: 3047:2\n")
-
-            lines, changed = udp_guard.read_new_log_lines(state, config)
-            self.assertTrue(changed)
-            self.assertEqual(lines, ["new accepted udp:x:1 email: 3047:2"])
-
-    def test_partial_log_line_is_not_consumed_until_complete(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            log_path = Path(tmp) / "access.log"
-            log_path.write_text("")
-            state = udp_guard.empty_state()
-            config = self.config(UDP_GUARD_ACCESS_LOG=str(log_path))
-            udp_guard.read_new_log_lines(state, config)
-
-            with log_path.open("a") as handle:
-                handle.write("accepted udp:x:1 email: 3047:2")
-            lines, _ = udp_guard.read_new_log_lines(state, config)
-            self.assertEqual(lines, [])
-
-            with log_path.open("a") as handle:
-                handle.write("\n")
-            lines, _ = udp_guard.read_new_log_lines(state, config)
-            self.assertEqual(lines, ["accepted udp:x:1 email: 3047:2"])
-
-    def test_invalid_threshold_configuration_is_rejected(self):
-        with self.assertRaisesRegex(RuntimeError, "HARD_LIMIT"):
-            self.config(UDP_GUARD_SOFT_LIMIT="512", UDP_GUARD_HARD_LIMIT="256")
 
 
 class ReportTrafficTests(unittest.TestCase):
